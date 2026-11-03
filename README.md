@@ -1,0 +1,79 @@
+# 🗂️ Penggabung Drive
+
+Gabungkan beberapa akun Google Drive menjadi **satu penyimpanan virtual**, dibuat dengan Python + Streamlit.
+
+Konsepnya terinspirasi dari [9Drive](https://github.com/zenhosta/9drive) (Apache-2.0). Kode di sini ditulis ulang dari nol, tidak menyalin kode 9Drive.
+
+## Fitur
+
+- **Gabung banyak akun Google Drive**: total kuota, terpakai, dan sisa dalam satu dasbor.
+- **Unggah otomatis ke akun yang muat**: tiga aturan, yaitu *ruang terbanyak*, *bergantian*, dan *urutan prioritas*. Bisa juga memilih akun tujuan sendiri.
+- **Folder virtual bersarang** dan **pencarian** di semua akun. Folder hanya ada di database, berkas di Drive disimpan rata di folder `PenggabungDrive`.
+- **Tautan berbagi publik** dengan masa berlaku (1, 7, 30 hari atau tanpa batas) dan bisa dimatikan.
+- Ganti nama, pindah, sampah, pulihkan, hapus permanen, dan **sinkronkan** berkas yang ditaruh manual di folder `PenggabungDrive`.
+- Token Google disimpan **terenkripsi**. Unggahan tidak ditulis ke disk server.
+
+## 1. Siapkan Google Cloud (sekali saja, ±10 menit)
+
+1. Buka <https://console.cloud.google.com/> dan buat/pilih proyek.
+2. *APIs & Services → Library → Google Drive API → Enable*.
+3. *OAuth consent screen*: tipe **External**, isi nama aplikasi dan email. Tambahkan scope:
+   `.../auth/drive`, `.../auth/userinfo.email`, `.../auth/userinfo.profile`.
+   Selama status **Testing**, daftarkan semua akun Google yang akan dipakai di **Test users**.
+4. *Credentials → Create Credentials → OAuth client ID → Web application*.
+   - **Authorized redirect URIs**: isi **persis sama** dengan `APP_URL`, misalnya `http://localhost:8501` (lokal) atau `https://namaapp.streamlit.app` (online). Tanpa garis miring di akhir.
+5. Salin **Client ID** dan **Client Secret**.
+
+## 2. Jalankan di komputer sendiri
+
+```bash
+pip install -r requirements.txt
+cp .streamlit/secrets.toml.example .streamlit/secrets.toml
+# isi GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, TOKEN_ENCRYPTION_KEY
+python -c "import secrets; print(secrets.token_urlsafe(48))"   # contoh pembuat kunci
+streamlit run app.py
+```
+
+Buka <http://localhost:8501>, klik **Masuk dengan Google**, lalu setujui semua izin.
+
+## 3. Pasang online (Streamlit Community Cloud)
+
+1. Unggah folder ini ke repositori GitHub (boleh privat). `secrets.toml` sudah masuk `.gitignore`.
+2. Di <https://share.streamlit.io> buat app dari repositori itu, file utama `app.py`.
+3. Isi **Settings → Secrets** dengan isi `secrets.toml.example`, dan set `APP_URL` ke alamat app Anda.
+4. Tambahkan alamat itu ke **Authorized redirect URIs** di Google Cloud.
+5. **Wajib pakai database Postgres.** Disk Streamlit Cloud tidak permanen, jadi SQLite akan hilang saat app restart. Gunakan Postgres gratis (Supabase atau Neon) dan isi `DATABASE_URL=postgresql://...`.
+
+## Cara pakai singkat
+
+1. Masuk dengan akun Google utama. Akun itu otomatis terhubung.
+2. **Pengaturan → Hubungkan akun Google lain** untuk menambah akun (pilih akun lain saat Google bertanya).
+3. **Pengaturan → Aturan pemilihan akun** untuk memilih mode unggah.
+4. **Unggah** berkas, **Berkas** untuk melihat, mencari, memindah, dan membagikan.
+
+## Batasan yang perlu diketahui
+
+- **Login tidak bertahan saat halaman dimuat ulang.** Streamlit tidak menyimpan sesi. Klik *Masuk dengan Google* lagi, biasanya langsung masuk tanpa mengetik apa pun.
+- **Unduhan dan tautan berbagi melewati server aplikasi** dan dimuat ke memori, jadi dibatasi `MAX_DOWNLOAD_MB` (bawaan 200 MB). Google Docs/Sheets diekspor sebagai PDF.
+- Unggahan juga lewat memori server. Batas per berkas diatur `maxUploadSize` di `.streamlit/config.toml` (bawaan 1024 MB), tetapi hosting gratis punya RAM terbatas, jadi berkas sangat besar sebaiknya diunggah langsung ke Drive lalu disinkronkan.
+- Tautan berbagi bisa dibuka siapa saja yang punya tautannya. Tidak ada pembatasan jumlah akses.
+- Scope Drive yang dipakai adalah akses penuh (`drive`), agar sinkronisasi berkas manual bisa bekerja. Selama status *Testing* di Google, refresh token berlaku sekitar 7 hari, setelah itu akun perlu dihubungkan ulang. Terbitkan (*Publish*) layar persetujuan bila ingin lebih lama.
+- Tidak ada pembagian ke pengguna lain (undangan) dan tidak ada S3 seperti di 9Drive.
+
+## Menjalankan uji
+
+```bash
+python -m pytest -q          # logika inti (routing, folder, berbagi, sinkronisasi)
+python tests/smoke_ui.py     # semua halaman tampil tanpa galat
+```
+
+## Struktur
+
+```
+app.py            antarmuka Streamlit
+core/routing.py   aturan memilih akun (fungsi murni)
+core/service.py   logika akun, upload, folder, berbagi
+core/drive.py     pembungkus Google OAuth + Drive API
+core/db.py        model database SQLAlchemy
+core/crypto.py    enkripsi token
+```
