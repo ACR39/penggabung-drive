@@ -1,0 +1,9 @@
+[server]
+maxUploadSize = 1024
+enableXsrfProtection = true
+
+[browser]
+gatherUsageStats = false
+
+[theme]
+primaryColor = "#16a34a"
