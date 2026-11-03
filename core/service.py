@@ -1,0 +1,670 @@
+"""Logika bisnis: akun, kuota, routing upload, folder virtual, berbagi.
+
+Semua fungsi menerima sesi database dan melakukan commit sendiri,
+sehingga aman dipakai dari Streamlit (yang bisa menghentikan skrip kapan saja).
+"""
+from __future__ import annotations
+
+import secrets
+from dataclasses import dataclass
+from datetime import timedelta
+from typing import Callable, Optional, Sequence
+
+from google.auth.exceptions import RefreshError
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from . import drive
+from .config import Settings
+from .crypto import decrypt, encrypt
+from .db import (
+    Account,
+    File,
+    Folder,
+    OauthState,
+    RoutingPolicy,
+    Share,
+    User,
+    utcnow,
+)
+from .routing import MODES, Candidate, pick_account
+
+STALE_AFTER = timedelta(minutes=5)
+OAUTH_STATE_TTL = timedelta(minutes=30)
+EXPIRY_CHOICES: dict[str, Optional[int]] = {
+    "Tanpa batas waktu": None,
+    "1 hari": 1,
+    "7 hari": 7,
+    "30 hari": 30,
+}
+
+
+class AppError(Exception):
+    """Kesalahan yang pesannya boleh langsung ditampilkan."""
+
+
+class NeedsConsent(AppError):
+    """Google tidak mengirim refresh token; pengguna perlu memberi izin ulang."""
+
+
+def _error_text(exc: Exception) -> str:
+    return str(exc) if isinstance(exc, AppError) else drive.friendly_error(exc)
+
+
+# ---------------------------------------------------------------- OAuth state
+
+
+@dataclass
+class PendingAuth:
+    purpose: str
+    user_id: Optional[str]
+    code_verifier: Optional[str]
+
+
+def save_oauth_state(
+    db: Session, state: str, purpose: str, user_id: Optional[str], verifier: Optional[str]
+) -> None:
+    for old in db.scalars(
+        select(OauthState).where(OauthState.created_at < utcnow() - OAUTH_STATE_TTL)
+    ):
+        db.delete(old)
+    db.add(
+        OauthState(state=state, purpose=purpose, user_id=user_id, code_verifier=verifier)
+    )
+    db.commit()
+
+
+def pop_oauth_state(db: Session, state: str) -> Optional[PendingAuth]:
+    row = db.get(OauthState, state)
+    if row is None:
+        return None
+    pending = PendingAuth(row.purpose, row.user_id, row.code_verifier)
+    fresh = utcnow() - row.created_at <= OAUTH_STATE_TTL
+    db.delete(row)
+    db.commit()
+    return pending if fresh else None
+
+
+# ---------------------------------------------------------------- Pengguna dan akun
+
+
+def get_or_create_user(db: Session, email: str, name: Optional[str]) -> User:
+    email = email.strip().lower()
+    user = db.scalar(select(User).where(User.email == email))
+    if user is None:
+        user = User(email=email, name=name)
+        db.add(user)
+    elif name and not user.name:
+        user.name = name
+    db.commit()
+    return user
+
+
+def resolve_login_user(db: Session, profile: dict) -> User:
+    """Masuk dengan akun Google yang sudah terhubung -> pakai dasbor pemiliknya."""
+    sub = str(profile["sub"])
+    acc = db.scalar(select(Account).where(Account.google_sub == sub))
+    if acc is not None:
+        user = db.get(User, acc.user_id)
+        if user is not None:
+            return user
+    return get_or_create_user(db, profile.get("email", ""), profile.get("name"))
+
+
+def upsert_account(
+    db: Session, settings: Settings, user: User, profile: dict, creds
+) -> Account:
+    sub = str(profile["sub"])
+    acc = db.scalar(
+        select(Account).where(Account.user_id == user.id, Account.google_sub == sub)
+    )
+    if acc is None:
+        if not creds.refresh_token:
+            raise NeedsConsent("Google belum memberi izin offline untuk akun ini.")
+        acc = Account(user_id=user.id, google_sub=sub, email=profile.get("email", ""))
+        db.add(acc)
+    elif not creds.refresh_token and not acc.refresh_token_enc:
+        raise NeedsConsent("Google belum memberi izin offline untuk akun ini.")
+    if creds.refresh_token:
+        acc.refresh_token_enc = encrypt(creds.refresh_token, settings.encryption_key)
+    acc.email = profile.get("email", acc.email)
+    acc.name = profile.get("name")
+    acc.picture = profile.get("picture")
+    acc.access_token_enc = encrypt(creds.token, settings.encryption_key)
+    acc.token_expiry = creds.expiry
+    acc.status = "connected"
+    acc.last_error = None
+    db.commit()
+    return acc
+
+
+def list_accounts(db: Session, user_id: str, connected_only: bool = False) -> list[Account]:
+    query = select(Account).where(Account.user_id == user_id)
+    if connected_only:
+        query = query.where(Account.status == "connected")
+    return list(db.scalars(query.order_by(Account.created_at)))
+
+
+def service_for(db: Session, settings: Settings, acc: Account):
+    """Layanan Drive untuk satu akun; token disegarkan dan disimpan bila perlu."""
+    if not acc.refresh_token_enc:
+        raise AppError("Akun ini belum punya izin offline. Hubungkan ulang.")
+    try:
+        refresh = decrypt(acc.refresh_token_enc, settings.encryption_key)
+        access = (
+            decrypt(acc.access_token_enc, settings.encryption_key)
+            if acc.access_token_enc
+            else None
+        )
+    except ValueError as exc:
+        raise AppError(str(exc)) from exc
+    creds = drive.make_credentials(settings, access, refresh, acc.token_expiry)
+    try:
+        if drive.refresh_if_needed(creds):
+            acc.access_token_enc = encrypt(creds.token, settings.encryption_key)
+            acc.token_expiry = creds.expiry
+            acc.status = "connected"
+            acc.last_error = None
+            db.commit()
+    except RefreshError as exc:
+        acc.status = "reauth"
+        acc.last_error = "Izin Google habis atau dicabut. Hubungkan ulang akun ini."
+        db.commit()
+        raise AppError(acc.last_error) from exc
+    except Exception as exc:
+        raise AppError(f"Gagal menyegarkan token: {exc}") from exc
+    return drive.drive_service(creds)
+
+
+def refresh_quota(db: Session, settings: Settings, acc: Account) -> None:
+    service = service_for(db, settings, acc)
+    try:
+        quota = drive.get_quota(service)
+    except Exception as exc:
+        acc.last_error = _error_text(exc)
+        db.commit()
+        raise AppError(acc.last_error) from exc
+    acc.total_bytes = quota.total
+    acc.used_bytes = quota.used
+    acc.trash_bytes = quota.trash
+    acc.last_synced_at = utcnow()
+    acc.last_error = None
+    db.commit()
+
+
+def refresh_stale(
+    db: Session, settings: Settings, accounts: Sequence[Account], force: bool = False
+) -> list[str]:
+    """Segarkan kuota akun yang basi. Mengembalikan daftar pesan galat."""
+    errors = []
+    for acc in accounts:
+        if acc.status != "connected":
+            continue
+        stale = acc.last_synced_at is None or utcnow() - acc.last_synced_at > STALE_AFTER
+        if force or stale:
+            try:
+                refresh_quota(db, settings, acc)
+            except AppError as exc:
+                errors.append(f"{acc.email}: {exc}")
+    return errors
+
+
+@dataclass
+class QuotaTotals:
+    total: int
+    used: int
+    free: int
+    unlimited_accounts: int
+
+
+def quota_totals(accounts: Sequence[Account]) -> QuotaTotals:
+    total = used = unlimited = 0
+    for acc in accounts:
+        if acc.status != "connected":
+            continue
+        if acc.total_bytes is None:
+            unlimited += 1
+            continue
+        total += acc.total_bytes
+        used += acc.used_bytes or 0
+    return QuotaTotals(total, used, max(total - used, 0), unlimited)
+
+
+def remove_account(db: Session, settings: Settings, user_id: str, account_id: str) -> None:
+    acc = db.get(Account, account_id)
+    if acc is None or acc.user_id != user_id:
+        raise AppError("Akun tidak ditemukan.")
+    if acc.refresh_token_enc:
+        try:
+            drive.revoke_token(decrypt(acc.refresh_token_enc, settings.encryption_key))
+        except ValueError:
+            pass
+    policy = db.get(RoutingPolicy, user_id)
+    if policy and account_id in (policy.priority_ids or []):
+        policy.priority_ids = [i for i in policy.priority_ids if i != account_id]
+    db.delete(acc)  # file milik akun ini ikut terhapus dari database (bukan dari Drive)
+    db.commit()
+
+
+# ---------------------------------------------------------------- Aturan upload
+
+
+def get_policy(db: Session, user_id: str) -> RoutingPolicy:
+    policy = db.get(RoutingPolicy, user_id)
+    if policy is None:
+        policy = RoutingPolicy(user_id=user_id, mode="most_available", priority_ids=[], cursor=0)
+        db.add(policy)
+        db.commit()
+    return policy
+
+
+def set_policy(db: Session, user_id: str, mode: str, priority_ids: list[str]) -> None:
+    if mode not in MODES:
+        raise AppError("Mode tidak dikenal.")
+    policy = get_policy(db, user_id)
+    policy.mode = mode
+    policy.priority_ids = list(priority_ids)
+    db.commit()
+
+
+def choose_account(
+    db: Session,
+    settings: Settings,
+    user_id: str,
+    size: int,
+    target_id: Optional[str] = None,
+) -> Optional[Account]:
+    query = select(Account).where(Account.user_id == user_id, Account.status == "connected")
+    if target_id:
+        query = query.where(Account.id == target_id)
+    accounts = list(db.scalars(query.order_by(Account.created_at)))
+    refresh_stale(db, settings, accounts)
+    usable = [a for a in accounts if a.status == "connected" and a.last_synced_at]
+    by_id = {a.id: a for a in usable}
+    candidates = [Candidate(a.id, a.created_at, a.available_bytes) for a in usable]
+    if target_id:
+        chosen, _ = pick_account(candidates, size)
+        return by_id.get(chosen) if chosen else None
+    policy = get_policy(db, user_id)
+    chosen, cursor = pick_account(
+        candidates, size, policy.mode, policy.priority_ids or [], policy.cursor
+    )
+    if chosen and policy.mode == "round_robin":
+        policy.cursor = cursor
+        db.commit()
+    return by_id.get(chosen) if chosen else None
+
+
+# ---------------------------------------------------------------- Upload
+
+
+@dataclass
+class UploadResult:
+    name: str
+    ok: bool
+    message: str
+    account_email: Optional[str] = None
+
+
+def upload_batch(
+    db: Session,
+    settings: Settings,
+    user_id: str,
+    items: Sequence[tuple[str, str, int, object]],
+    folder_id: Optional[str],
+    target_id: Optional[str] = None,
+    on_progress: Optional[Callable[[int, int, float], None]] = None,
+) -> list[UploadResult]:
+    """items: (nama, mime, ukuran, objek_file). Tiap file memilih akunnya sendiri."""
+    results: list[UploadResult] = []
+    for index, (name, mime, size, fileobj) in enumerate(items):
+        try:
+            acc = choose_account(db, settings, user_id, size, target_id)
+            if acc is None:
+                results.append(
+                    UploadResult(name, False, "Tidak ada akun dengan ruang yang cukup.")
+                )
+                continue
+            service = service_for(db, settings, acc)
+            folder = drive.ensure_app_folder(service, acc.app_folder_id)
+            if folder != acc.app_folder_id:
+                acc.app_folder_id = folder
+                db.commit()
+            callback = (
+                (lambda fraction, i=index: on_progress(i, len(items), fraction))
+                if on_progress
+                else None
+            )
+            meta = drive.upload_file(service, folder, name, mime, fileobj, size, callback)
+            db.add(
+                File(
+                    user_id=user_id,
+                    account_id=acc.id,
+                    folder_id=folder_id,
+                    drive_file_id=meta["id"],
+                    name=meta["name"][:255],
+                    mime_type=meta.get("mimeType") or mime or "application/octet-stream",
+                    size_bytes=int(meta.get("size", size)),
+                )
+            )
+            acc.used_bytes = (acc.used_bytes or 0) + size
+            db.commit()
+            results.append(UploadResult(name, True, "Berhasil", acc.email))
+        except Exception as exc:
+            db.rollback()
+            results.append(UploadResult(name, False, _error_text(exc)))
+    return results
+
+
+def sync_account_files(db: Session, settings: Settings, acc: Account) -> dict[str, int]:
+    """Samakan database dengan isi folder aplikasi di Drive (Drive jadi acuan)."""
+    service = service_for(db, settings, acc)
+    try:
+        folder = drive.ensure_app_folder(service, acc.app_folder_id)
+        remote = {f["id"]: f for f in drive.list_folder_files(service, folder)}
+    except Exception as exc:
+        raise AppError(_error_text(exc)) from exc
+    if folder != acc.app_folder_id:
+        acc.app_folder_id = folder
+    existing = {
+        f.drive_file_id: f for f in db.scalars(select(File).where(File.account_id == acc.id))
+    }
+    created = updated = removed = 0
+    for remote_id, item in remote.items():
+        name, mime = item["name"][:255], item["mimeType"]
+        size = int(item.get("size", 0))
+        current = existing.get(remote_id)
+        if current is None:
+            db.add(
+                File(
+                    user_id=acc.user_id,
+                    account_id=acc.id,
+                    drive_file_id=remote_id,
+                    name=name,
+                    mime_type=mime,
+                    size_bytes=size,
+                )
+            )
+            created += 1
+            continue
+        changed = (current.name, current.mime_type, current.size_bytes) != (name, mime, size)
+        if current.status == "deleted":  # muncul lagi di Drive
+            current.status, current.deleted_at, changed = "active", None, True
+        if changed:
+            current.name, current.mime_type, current.size_bytes = name, mime, size
+            updated += 1
+    for remote_id, current in existing.items():
+        if remote_id not in remote and current.status != "deleted":
+            current.status, current.deleted_at = "deleted", utcnow()
+            removed += 1
+    db.commit()
+    try:
+        refresh_quota(db, settings, acc)
+    except AppError:
+        pass
+    return {"dibuat": created, "diperbarui": updated, "dihapus": removed}
+
+
+# ---------------------------------------------------------------- Folder virtual
+
+
+def _same(column, value):
+    return column.is_(None) if value is None else column == value
+
+
+def list_subfolders(db: Session, user_id: str, parent_id: Optional[str]) -> list[Folder]:
+    return list(
+        db.scalars(
+            select(Folder)
+            .where(Folder.user_id == user_id, _same(Folder.parent_id, parent_id))
+            .order_by(Folder.name)
+        )
+    )
+
+
+def breadcrumb(db: Session, user_id: str, folder_id: Optional[str]) -> list[Folder]:
+    chain: list[Folder] = []
+    seen: set[str] = set()
+    current = folder_id
+    while current and current not in seen:
+        seen.add(current)
+        folder = db.get(Folder, current)
+        if folder is None or folder.user_id != user_id:
+            break
+        chain.append(folder)
+        current = folder.parent_id
+    return list(reversed(chain))
+
+
+def folder_options(db: Session, user_id: str) -> list[tuple[Optional[str], str]]:
+    folders = list(db.scalars(select(Folder).where(Folder.user_id == user_id)))
+    by_id = {f.id: f for f in folders}
+
+    def label(folder: Folder) -> str:
+        parts, seen, cur = [], set(), folder
+        while cur is not None and cur.id not in seen:
+            seen.add(cur.id)
+            parts.append(cur.name)
+            cur = by_id.get(cur.parent_id) if cur.parent_id else None
+        return " / ".join(reversed(parts))
+
+    options = sorted(((f.id, label(f)) for f in folders), key=lambda pair: pair[1].lower())
+    return [(None, "Beranda (akar)")] + options
+
+
+def _clean_name(name: str) -> str:
+    name = (name or "").strip()
+    if not name:
+        raise AppError("Nama tidak boleh kosong.")
+    if "/" in name or "\\" in name:
+        raise AppError("Nama tidak boleh memuat garis miring.")
+    return name[:255]
+
+
+def _owned_folder(db: Session, user_id: str, folder_id: Optional[str]) -> Optional[Folder]:
+    if folder_id is None:
+        return None
+    folder = db.get(Folder, folder_id)
+    if folder is None or folder.user_id != user_id:
+        raise AppError("Folder tidak ditemukan.")
+    return folder
+
+
+def create_folder(db: Session, user_id: str, parent_id: Optional[str], name: str) -> Folder:
+    name = _clean_name(name)
+    _owned_folder(db, user_id, parent_id)
+    clash = db.scalar(
+        select(Folder).where(
+            Folder.user_id == user_id, _same(Folder.parent_id, parent_id), Folder.name == name
+        )
+    )
+    if clash:
+        raise AppError("Sudah ada folder dengan nama itu di sini.")
+    folder = Folder(user_id=user_id, parent_id=parent_id, name=name)
+    db.add(folder)
+    db.commit()
+    return folder
+
+
+def rename_folder(db: Session, user_id: str, folder_id: str, name: str) -> None:
+    folder = _owned_folder(db, user_id, folder_id)
+    folder.name = _clean_name(name)
+    db.commit()
+
+
+def delete_folder(db: Session, user_id: str, folder_id: str) -> Optional[str]:
+    """Hapus folder; isinya naik ke folder induk. Mengembalikan id induk."""
+    folder = _owned_folder(db, user_id, folder_id)
+    parent = folder.parent_id
+    for child in db.scalars(select(Folder).where(Folder.parent_id == folder.id)):
+        child.parent_id = parent
+    for item in db.scalars(select(File).where(File.folder_id == folder.id)):
+        item.folder_id = parent
+    db.flush()
+    db.delete(folder)
+    db.commit()
+    return parent
+
+
+# ---------------------------------------------------------------- File
+
+
+def _like(text: str) -> str:
+    escaped = text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return f"%{escaped}%"
+
+
+def list_files(
+    db: Session,
+    user_id: str,
+    folder_id: Optional[str] = None,
+    query: Optional[str] = None,
+    status: str = "active",
+    limit: int = 300,
+) -> list[tuple[File, str]]:
+    stmt = (
+        select(File, Account.email)
+        .join(Account, File.account_id == Account.id)
+        .where(File.user_id == user_id, File.status == status)
+    )
+    if query:
+        stmt = stmt.where(File.name.ilike(_like(query.strip()), escape="\\"))
+    elif status == "active":
+        stmt = stmt.where(_same(File.folder_id, folder_id))
+    order = File.deleted_at.desc() if status == "trashed" else File.name
+    return [(f, email) for f, email in db.execute(stmt.order_by(order).limit(limit))]
+
+
+def _owned_files(db: Session, user_id: str, file_ids: Sequence[str]) -> list[File]:
+    return list(
+        db.scalars(select(File).where(File.user_id == user_id, File.id.in_(list(file_ids))))
+    )
+
+
+def move_files(db: Session, user_id: str, file_ids: Sequence[str], folder_id: Optional[str]) -> int:
+    _owned_folder(db, user_id, folder_id)
+    files = _owned_files(db, user_id, file_ids)
+    for item in files:
+        item.folder_id = folder_id
+    db.commit()
+    return len(files)
+
+
+def rename_file(
+    db: Session, settings: Settings, user_id: str, file_id: str, new_name: str
+) -> None:
+    new_name = _clean_name(new_name)
+    files = _owned_files(db, user_id, [file_id])
+    if not files:
+        raise AppError("File tidak ditemukan.")
+    item = files[0]
+    acc = db.get(Account, item.account_id)
+    service = service_for(db, settings, acc)
+    try:
+        drive.rename_file(service, item.drive_file_id, new_name)
+    except Exception as exc:
+        raise AppError(_error_text(exc)) from exc
+    item.name = new_name
+    db.commit()
+
+
+def trash_files(db: Session, user_id: str, file_ids: Sequence[str]) -> int:
+    files = [f for f in _owned_files(db, user_id, file_ids) if f.status == "active"]
+    for item in files:
+        item.status, item.deleted_at = "trashed", utcnow()
+    db.commit()
+    return len(files)
+
+
+def restore_files(db: Session, user_id: str, file_ids: Sequence[str]) -> int:
+    files = [f for f in _owned_files(db, user_id, file_ids) if f.status == "trashed"]
+    for item in files:
+        item.status, item.deleted_at = "active", None
+    db.commit()
+    return len(files)
+
+
+def delete_forever(
+    db: Session, settings: Settings, user_id: str, file_ids: Sequence[str]
+) -> tuple[int, list[str]]:
+    """Hapus permanen dari Drive dan database. Mengembalikan (jumlah, daftar galat)."""
+    done, errors = 0, []
+    for item in _owned_files(db, user_id, file_ids):
+        try:
+            acc = db.get(Account, item.account_id)
+            service = service_for(db, settings, acc)
+            drive.delete_file(service, item.drive_file_id)
+            acc.used_bytes = max((acc.used_bytes or 0) - (item.size_bytes or 0), 0)
+            db.delete(item)
+            db.commit()
+            done += 1
+        except Exception as exc:
+            db.rollback()
+            errors.append(f"{item.name}: {_error_text(exc)}")
+    return done, errors
+
+
+def download_file(db: Session, settings: Settings, item: File) -> tuple[bytes, str, str]:
+    acc = db.get(Account, item.account_id)
+    if acc is None:
+        raise AppError("Akun penyimpan file ini sudah dilepas.")
+    service = service_for(db, settings, acc)
+    try:
+        return drive.download_bytes(
+            service, item.drive_file_id, settings.max_download_mb * 1024 * 1024
+        )
+    except drive.DriveError as exc:
+        raise AppError(str(exc)) from exc
+    except Exception as exc:
+        raise AppError(_error_text(exc)) from exc
+
+
+# ---------------------------------------------------------------- Berbagi
+
+
+def create_share(
+    db: Session, user_id: str, file_id: str, days: Optional[int]
+) -> Share:
+    files = [f for f in _owned_files(db, user_id, [file_id]) if f.status == "active"]
+    if not files:
+        raise AppError("File tidak ditemukan.")
+    share = Share(
+        file_id=file_id,
+        user_id=user_id,
+        token=secrets.token_urlsafe(24),
+        expires_at=None if days is None else utcnow() + timedelta(days=days),
+    )
+    db.add(share)
+    db.commit()
+    return share
+
+
+def list_shares(db: Session, user_id: str) -> list[tuple[Share, File]]:
+    rows = db.execute(
+        select(Share, File)
+        .join(File, Share.file_id == File.id)
+        .where(Share.user_id == user_id, Share.enabled.is_(True), File.status == "active")
+        .order_by(Share.created_at.desc())
+    )
+    return [(s, f) for s, f in rows]
+
+
+def disable_share(db: Session, user_id: str, share_id: str) -> None:
+    share = db.get(Share, share_id)
+    if share is None or share.user_id != user_id:
+        raise AppError("Tautan tidak ditemukan.")
+    share.enabled = False
+    db.commit()
+
+
+def resolve_public_share(db: Session, token: str) -> Optional[tuple[Share, File]]:
+    """Tautan valid hanya bila aktif, belum kedaluwarsa, dan filenya masih aktif."""
+    share = db.scalar(select(Share).where(Share.token == token))
+    if share is None or not share.enabled:
+        return None
+    if share.expires_at is not None and share.expires_at < utcnow():
+        return None
+    item = db.get(File, share.file_id)
+    if item is None or item.status != "active":
+        return None
+    return share, item
