@@ -5,6 +5,7 @@ Kode ini ditulis ulang dari nol dalam Python/Streamlit.
 """
 from __future__ import annotations
 
+import html
 import secrets
 
 import pandas as pd
@@ -18,23 +19,115 @@ from core.utils import file_icon, fmt_bytes, fmt_dt
 
 st.set_page_config(page_title="Penggabung Drive", page_icon="🗂️", layout="wide")
 
-ACCENT = "#16a34a"
-st.markdown(
-    f"""
+CSS = """
 <style>
-[data-testid="stSidebar"] {{ background:#0f172a; }}
-[data-testid="stSidebar"] * {{ color:#e2e8f0; }}
-[data-testid="stSidebar"] [role="radiogroup"] label {{ padding:.35rem .5rem; border-radius:.5rem; }}
-[data-testid="stSidebar"] [role="radiogroup"] label:has(input:checked) {{ background:{ACCENT}33; }}
-div[data-testid="stMetric"] {{ background:#fff; border:1px solid #e5e7eb; border-radius:.75rem; padding:.75rem 1rem; }}
-.chip {{ display:inline-block; padding:.1rem .55rem; border-radius:999px; font-size:.78rem; background:#dcfce7; color:#166534; }}
-.chip.warn {{ background:#fee2e2; color:#991b1b; }}
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+html, body, .stApp, button, input, textarea { font-family:'Inter',sans-serif; }
+.stApp { background:linear-gradient(180deg,#f8f9fe 0%,#f2f3fa 100%); }
+header[data-testid="stHeader"] { background:transparent; }
+.stAppDeployButton, footer { display:none !important; }
+.block-container { padding-top:2.2rem; max-width:1180px; }
+
+/* sidebar */
+[data-testid="stSidebar"] { background:#fff; border-right:1px solid #eceef6; }
+[data-testid="stSidebar"] [role="radiogroup"] { gap:.2rem; }
+[data-testid="stSidebar"] [role="radiogroup"] label { padding:.6rem .9rem; border-radius:12px; width:100%; cursor:pointer; }
+[data-testid="stSidebar"] [role="radiogroup"] label:hover { background:#f3f4fb; }
+[data-testid="stSidebar"] [data-testid="stRadioOption"] > div > div:first-child { display:none; }
+[data-testid="stSidebar"] [role="radiogroup"] label:has(input:checked) { background:#e0e7ff; }
+[data-testid="stSidebar"] [role="radiogroup"] label:has(input:checked) p { color:#4338ca; font-weight:600; }
+.brand { display:flex; align-items:center; gap:.7rem; font-weight:700; font-size:1.2rem; color:#111827; margin:.2rem 0 1.1rem; }
+.logo { width:38px; height:38px; border-radius:12px; background:linear-gradient(135deg,#818cf8,#4f46e5); display:grid; place-items:center; box-shadow:0 6px 14px rgba(79,70,229,.35); }
+.userbox { display:flex; align-items:center; gap:.7rem; padding:.6rem 0 1rem; border-bottom:1px solid #eceef6; margin-bottom:.9rem; }
+.avatar { width:38px; height:38px; border-radius:50%; background:#e0e7ff; color:#4338ca; display:grid; place-items:center; font-weight:700; }
+.u-name { font-weight:600; color:#111827; font-size:.95rem; line-height:1.2; }
+.u-mail { color:#6b7280; font-size:.8rem; word-break:break-all; }
+.side-storage { margin-top:1.2rem; padding-top:1rem; border-top:1px solid #eceef6; }
+.side-storage .row { display:flex; justify-content:space-between; font-size:.85rem; color:#374151; margin-bottom:.45rem; }
+
+/* kartu & tombol */
+[data-testid="stVerticalBlockBorderWrapper"] { border-radius:16px; border:1px solid #eceef6; background:#fff !important; box-shadow:0 4px 18px rgba(30,41,90,.05); }
+.stButton > button, .stDownloadButton > button, [data-testid="stBaseLinkButton-secondary"], [data-testid="stBaseLinkButton-primary"] { border-radius:12px; font-weight:500; }
+.stButton > button[kind="secondary"], .stDownloadButton > button { border:1px solid #e5e7f2; background:#fff; box-shadow:0 1px 2px rgba(30,41,90,.06); }
+[data-testid="stBaseButton-primary"], [data-testid="stBaseLinkButton-primary"] { box-shadow:0 8px 18px rgba(79,70,229,.30); }
+[data-baseweb="input"], [data-baseweb="select"] > div, [data-baseweb="base-input"] { border-radius:12px !important; }
+
+/* judul, statistik, akun */
+.page-title { font-size:2rem; font-weight:700; color:#111827; line-height:1.15; }
+.page-sub { color:#6b7280; margin:.25rem 0 1.1rem; }
+.stat-grid { display:grid; grid-template-columns:repeat(4,1fr); gap:1rem; margin:.4rem 0 1.4rem; }
+.stat { background:#fff; border-radius:16px; padding:1rem 1.25rem; border:1px solid #f0f1f8; box-shadow:0 4px 18px rgba(30,41,90,.06); }
+.stat .l { color:#6b7280; font-size:.88rem; }
+.stat .v { font-size:1.65rem; font-weight:700; color:#111827; margin-top:.25rem; }
+.acc-grid { display:grid; grid-template-columns:repeat(2,1fr); gap:1rem; margin-top:.6rem; }
+.acc { background:#fff; border-radius:16px; padding:1.1rem 1.25rem; border:1px solid #f0f1f8; box-shadow:0 4px 18px rgba(30,41,90,.06); }
+.acc-top { display:flex; align-items:center; gap:.75rem; margin-bottom:.9rem; }
+.acc-ico { width:40px; height:40px; border-radius:12px; background:linear-gradient(135deg,#818cf8,#4f46e5); color:#fff; display:grid; place-items:center; font-size:1.1rem; flex:none; }
+.acc-name { font-weight:600; color:#111827; word-break:break-all; }
+.acc-sub { color:#6b7280; font-size:.84rem; }
+.acc-top .chip { margin-left:auto; flex:none; }
+.bar { height:8px; border-radius:999px; background:#eef0f8; overflow:hidden; margin:.2rem 0 .55rem; }
+.bar > span { display:block; height:100%; border-radius:999px; background:linear-gradient(90deg,#818cf8,#4f46e5); }
+.bar.warn > span { background:linear-gradient(90deg,#f59e0b,#ef4444); }
+.chip { display:inline-block; padding:.15rem .6rem; border-radius:999px; font-size:.76rem; font-weight:500; background:#dcfce7; color:#166534; }
+.chip.warn { background:#fee2e2; color:#991b1b; }
+.row-name { font-weight:600; color:#111827; word-break:break-all; }
+.login-card { background:#fff; border:1px solid #eceef6; border-radius:20px; padding:2.2rem 2rem 1.6rem; box-shadow:0 12px 40px rgba(30,41,90,.10); margin-top:3rem; }
+@media (max-width:820px) { .stat-grid { grid-template-columns:repeat(2,1fr); } .acc-grid { grid-template-columns:1fr; } }
 </style>
-""",
-    unsafe_allow_html=True,
+"""
+st.markdown(CSS, unsafe_allow_html=True)
+
+LOGO_SVG = (
+    '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" '
+    'stroke-linecap="round" stroke-linejoin="round"><path d="M12 3 3 8l9 5 9-5-9-5Z"/>'
+    '<path d="m3 13 9 5 9-5"/></svg>'
 )
 
-MENU = ["🏠 Beranda", "🗂️ Berkas", "⬆️ Unggah", "🔗 Dibagikan", "🗑️ Sampah", "⚙️ Pengaturan"]
+
+def esc(value) -> str:
+    return html.escape(str(value), quote=True)
+
+
+def page_header(title: str, subtitle: str = "") -> None:
+    st.markdown(
+        f'<div class="page-title">{esc(title)}</div><div class="page-sub">{esc(subtitle)}</div>',
+        unsafe_allow_html=True,
+    )
+
+
+def stat_cards(items) -> None:
+    cells = "".join(
+        f'<div class="stat"><div class="l">{esc(label)}</div><div class="v">{esc(value)}</div></div>'
+        for label, value in items
+    )
+    st.markdown(f'<div class="stat-grid">{cells}</div>', unsafe_allow_html=True)
+
+
+def bar_html(used: int, total: int | None) -> str:
+    pct = 0 if not total else min(used / total * 100, 100)
+    warn = " warn" if pct >= 90 else ""
+    return f'<div class="bar{warn}"><span style="width:{pct:.1f}%"></span></div>'
+
+
+def account_card_html(acc) -> str:
+    if acc.status == "connected":
+        chip = '<span class="chip">Terhubung</span>'
+        body = (
+            bar_html(acc.used_bytes or 0, acc.total_bytes)
+            + f'<div class="acc-sub">{esc(fmt_bytes(acc.used_bytes))} terpakai · '
+            f'{esc(fmt_bytes(acc.available_bytes))} tersedia</div>'
+        )
+    else:
+        chip = '<span class="chip warn">Hubungkan ulang</span>'
+        body = f'<div class="acc-sub">{esc(acc.last_error or "Izin Google perlu diperbarui.")}</div>'
+    return (
+        f'<div class="acc"><div class="acc-top"><div class="acc-ico">☁</div><div>'
+        f'<div class="acc-name">{esc(acc.email)}</div><div class="acc-sub">Google Drive</div></div>{chip}</div>{body}</div>'
+    )
+
+
+MENU = ["Kuota", "Berkas", "Unggah", "Dibagikan", "Sampah", "Pengaturan"]
 
 
 # ------------------------------------------------------------------ pembantu
@@ -153,72 +246,117 @@ def handle_callback(settings: Settings, db) -> None:
 
 
 def login_page(settings: Settings, db) -> None:
-    left, mid, right = st.columns([1, 2, 1])
+    left, mid, right = st.columns([1, 1.6, 1])
     with mid:
-        st.title("🗂️ Penggabung Drive")
-        st.write(
-            "Gabungkan beberapa akun Google Drive menjadi **satu penyimpanan virtual**. "
-            "Unggahan dipilihkan akun yang masih punya ruang."
-        )
-        show_flash()
-        consent = st.session_state.get("need_consent", False)
-        if "login_url" not in st.session_state or st.session_state.get("login_consent") != consent:
-            st.session_state["login_url"] = login_url(settings, db, "login", None, consent)
-            st.session_state["login_consent"] = consent
-        st.link_button(
-            "Masuk dengan Google", st.session_state["login_url"], type="primary", width="stretch"
-        )
-        st.caption(
-            "Masuklah dengan akun Google utama. Akun lain bisa ditambahkan setelah masuk "
-            "(Pengaturan → Hubungkan akun). Halaman Google terbuka di tab baru."
-        )
+        st.write("")
+        st.write("")
+        with st.container(border=True):
+            st.markdown(
+                f'<div class="brand"><div class="logo">{LOGO_SVG}</div>Penggabung Drive</div>'
+                '<div class="page-title" style="font-size:1.6rem">Satu penyimpanan, banyak akun</div>'
+                '<div class="page-sub">Gabungkan beberapa Google Drive. Unggahan otomatis dipilihkan akun yang masih punya ruang.</div>',
+                unsafe_allow_html=True,
+            )
+            show_flash()
+            consent = st.session_state.get("need_consent", False)
+            if "login_url" not in st.session_state or st.session_state.get("login_consent") != consent:
+                st.session_state["login_url"] = login_url(settings, db, "login", None, consent)
+                st.session_state["login_consent"] = consent
+            st.link_button(
+                "Masuk dengan Google", st.session_state["login_url"], type="primary", width="stretch"
+            )
+            st.caption(
+                "Masuklah dengan akun Google utama. Akun lain ditambahkan setelah masuk. "
+                "Halaman Google terbuka di tab baru."
+            )
 
 
 # ------------------------------------------------------------------ halaman utama
 
 
+MODE_LABELS = {
+    "most_available": "Ruang terbanyak",
+    "round_robin": "Bergantian",
+    "priority": "Urutan prioritas",
+}
+
+
+def ordered_accounts(accounts, priority_ids):
+    """Akun terhubung diurutkan: yang ada di daftar prioritas dulu, sisanya menurut tanggal dibuat."""
+    rank = {i: n for n, i in enumerate(priority_ids or [])}
+    return sorted(accounts, key=lambda a: (0, rank[a.id], a.created_at) if a.id in rank else (1, 0, a.created_at))
+
+
 def page_home(settings: Settings, db, user) -> None:
-    st.header("Beranda")
     accounts = service.list_accounts(db, user.id)
-    top = st.columns([4, 1])
-    if top[1].button("🔄 Segarkan kuota", width="stretch"):
-        with st.spinner("Menghubungi Google…"):
-            for msg in service.refresh_stale(db, settings, accounts, force=True):
-                flash("err", msg)
-        st.rerun()
+    head = st.columns([5, 1.4])
+    with head[0]:
+        page_header("Pelacak Kuota", "Pantau batas penyimpanan semua akun yang terhubung.")
+    with head[1]:
+        st.write("")
+        if st.button("Segarkan", icon=":material/refresh:", width="stretch"):
+            with st.spinner("Menghubungi Google…"):
+                for msg in service.refresh_stale(db, settings, accounts, force=True):
+                    flash("err", msg)
+            st.rerun()
     show_flash()
-    errors = service.refresh_stale(db, settings, accounts)
-    for msg in errors:
+    for msg in service.refresh_stale(db, settings, accounts):
         st.warning(msg)
     if not accounts:
         st.info("Belum ada akun. Buka Pengaturan untuk menghubungkan Google Drive.")
         return
     totals = service.quota_totals(accounts)
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Total ruang", fmt_bytes(totals.total))
-    c2.metric("Terpakai", fmt_bytes(totals.used))
-    c3.metric("Tersisa", fmt_bytes(totals.free))
-    c4.metric("Akun terhubung", sum(1 for a in accounts if a.status == "connected"))
-    if totals.total:
-        st.progress(min(totals.used / totals.total, 1.0), text=f"{totals.used / totals.total:.0%} terpakai")
+    stat_cards(
+        [
+            ("Total ruang", fmt_bytes(totals.total)),
+            ("Terpakai", fmt_bytes(totals.used)),
+            ("Tersedia", fmt_bytes(totals.free)),
+            ("Akun", sum(1 for a in accounts if a.status == "connected")),
+        ]
+    )
     if totals.unlimited_accounts:
         st.caption(f"{totals.unlimited_accounts} akun berkuota tak terbatas tidak dihitung ke total.")
-    st.subheader("Per akun")
-    for acc in accounts:
+
+    connected = [a for a in accounts if a.status == "connected"]
+    if connected:
+        policy = service.get_policy(db, user.id)
+        order = ordered_accounts(connected, policy.priority_ids)
         with st.container(border=True):
-            cols = st.columns([3, 5, 2])
-            cols[0].markdown(f"**{acc.email}**")
-            if acc.status != "connected":
-                cols[2].markdown('<span class="chip warn">Perlu hubungkan ulang</span>', unsafe_allow_html=True)
-                cols[1].caption(acc.last_error or "")
-                continue
-            if acc.total_bytes:
-                cols[1].progress(min((acc.used_bytes or 0) / acc.total_bytes, 1.0))
-            cols[1].caption(
-                f"{fmt_bytes(acc.used_bytes)} dari {fmt_bytes(acc.total_bytes)} · "
-                f"disinkronkan {fmt_dt(acc.last_synced_at)} UTC"
+            top = st.columns([3, 2])
+            top[0].markdown("**Aturan unggah**")
+            top[0].caption("Pilih bagaimana unggahan baru memilih akun penyimpanan.")
+            mode = top[1].selectbox(
+                "Mode",
+                list(MODE_LABELS),
+                index=list(MODE_LABELS).index(policy.mode) if policy.mode in MODE_LABELS else 0,
+                format_func=lambda m: MODE_LABELS[m],
+                key="route_mode",
+                label_visibility="collapsed",
             )
-            cols[2].markdown('<span class="chip">Terhubung</span>', unsafe_allow_html=True)
+            if mode != policy.mode:
+                service.set_policy(db, user.id, mode, [a.id for a in order])
+                flash("ok", f"Aturan diubah: {MODE_LABELS[mode]}.")
+                st.rerun()
+            for i, acc in enumerate(order):
+                row = st.columns([6, 1.1, 1.1])
+                row[0].markdown(f'<div class="row-name">{esc(acc.email)}</div>', unsafe_allow_html=True)
+                row[0].caption(
+                    f"Google Drive · {fmt_bytes(acc.used_bytes)} terpakai · {fmt_bytes(acc.available_bytes)} tersedia"
+                )
+                for col, label, delta in ((row[1], "Naik", -1), (row[2], "Turun", 1)):
+                    j = i + delta
+                    if col.button(label, key=f"{label}_{acc.id}", disabled=not 0 <= j < len(order), width="stretch"):
+                        ids = [a.id for a in order]
+                        ids[i], ids[j] = ids[j], ids[i]
+                        service.set_policy(db, user.id, policy.mode, ids)
+                        st.rerun()
+            st.caption("Urutan ini dipakai oleh mode Bergantian dan Urutan prioritas.")
+
+    st.markdown(
+        '<div class="acc-grid">' + "".join(account_card_html(a) for a in accounts) + "</div>",
+        unsafe_allow_html=True,
+    )
+    st.caption("Kuota terakhir disinkronkan: " + ", ".join(f"{a.email.split('@')[0]} {fmt_dt(a.last_synced_at)} UTC" for a in connected))
 
 
 def folder_picker(db, user, label: str, key: str, exclude: str | None = None) -> str | None:
@@ -228,7 +366,7 @@ def folder_picker(db, user, label: str, key: str, exclude: str | None = None) ->
 
 
 def page_files(settings: Settings, db, user) -> None:
-    st.header("Berkas")
+    page_header("Berkas", "Cari, atur, dan bagikan berkas dari semua akun.")
     show_flash()
     folder_id = st.session_state.get("folder_id")
     crumbs = service.breadcrumb(db, user.id, folder_id)
@@ -362,7 +500,7 @@ def page_files(settings: Settings, db, user) -> None:
 
 
 def page_upload(settings: Settings, db, user) -> None:
-    st.header("Unggah")
+    page_header("Unggah", "Kirim berkas ke akun yang paling sesuai.")
     accounts = service.list_accounts(db, user.id, connected_only=True)
     if not accounts:
         st.info("Hubungkan minimal satu akun Google Drive di Pengaturan.")
@@ -402,7 +540,7 @@ def page_upload(settings: Settings, db, user) -> None:
 
 
 def page_shared(settings: Settings, db, user) -> None:
-    st.header("Dibagikan")
+    page_header("Dibagikan", "Tautan publik yang sedang aktif.")
     show_flash()
     shares = service.list_shares(db, user.id)
     if not shares:
@@ -423,7 +561,7 @@ def page_shared(settings: Settings, db, user) -> None:
 
 
 def page_trash(settings: Settings, db, user) -> None:
-    st.header("Sampah")
+    page_header("Sampah", "Pulihkan atau hapus permanen berkas.")
     show_flash()
     rows = service.list_files(db, user.id, status="trashed")
     if not rows:
@@ -453,19 +591,19 @@ def page_trash(settings: Settings, db, user) -> None:
 
 
 def page_settings(settings: Settings, db, user) -> None:
-    st.header("Pengaturan")
+    page_header("Pengaturan", "Kelola akun Google Drive yang terhubung.")
     show_flash()
     accounts = service.list_accounts(db, user.id)
 
-    st.subheader("Akun Google Drive")
     if "connect_url" not in st.session_state:
         st.session_state["connect_url"] = login_url(settings, db, "connect", user.id, True)
-    st.link_button("➕ Hubungkan akun Google lain", st.session_state["connect_url"])
+    st.link_button("Hubungkan akun Google lain", st.session_state["connect_url"], icon=":material/add_link:", type="primary")
+    st.caption("Pilih akun lain saat Google bertanya. Untuk menghubungkan ulang akun yang kedaluwarsa, pilih akun yang sama.")
     for acc in accounts:
         with st.container(border=True):
             cols = st.columns([4, 2, 2, 2])
-            cols[0].markdown(f"**{acc.email}**" + (" ⚠️" if acc.status != "connected" else ""))
-            cols[1].caption(fmt_bytes(acc.used_bytes) + " terpakai")
+            cols[0].markdown(f'<div class="row-name">{esc(acc.email)}</div>', unsafe_allow_html=True)
+            cols[0].caption("Perlu dihubungkan ulang" if acc.status != "connected" else f"{fmt_bytes(acc.used_bytes)} terpakai")
             if cols[2].button("Sinkronkan berkas", key=f"sync_{acc.id}", disabled=acc.status != "connected"):
                 try:
                     with st.spinner("Membaca folder PenggabungDrive…"):
@@ -483,36 +621,10 @@ def page_settings(settings: Settings, db, user) -> None:
                     st.session_state.pop("confirm_rm", None)
                     flash("ok", "Akun dilepas.")
                     st.rerun()
-            if acc.status != "connected":
-                st.caption(acc.last_error or "Perlu hubungkan ulang: tekan tombol hubungkan di atas dan pilih akun ini.")
-    if len(accounts) == 0:
+            if acc.status != "connected" and acc.last_error:
+                st.caption(acc.last_error)
+    if not accounts:
         st.info("Belum ada akun.")
-
-    st.subheader("Aturan pemilihan akun saat unggah")
-    policy = service.get_policy(db, user.id)
-    modes = {
-        "most_available": "Ruang terbanyak: ke akun yang paling lega",
-        "round_robin": "Bergantian: giliran antar akun",
-        "priority": "Urutan prioritas: akun pertama yang masih muat",
-    }
-    mode = st.radio("Mode", list(modes), format_func=lambda m: modes[m], index=list(modes).index(policy.mode), key="mode")
-    connected = [a for a in accounts if a.status == "connected"]
-    labels = {a.id: a.email for a in connected}
-    prio = st.multiselect(
-        "Urutan prioritas (dipakai mode Bergantian dan Prioritas)",
-        [a.id for a in connected],
-        default=[i for i in (policy.priority_ids or []) if i in labels],
-        format_func=lambda i: labels[i],
-    )
-    if st.button("Simpan aturan"):
-        service.set_policy(db, user.id, mode, prio)
-        flash("ok", "Aturan disimpan.")
-        st.rerun()
-
-    st.divider()
-    st.caption(f"Masuk sebagai {user.email}")
-    if st.button("Keluar"):
-        logout()
 
 
 # ------------------------------------------------------------------ titik masuk
@@ -542,10 +654,25 @@ def main() -> None:
             login_page(settings, db)
             return
 
+        accounts_all = service.list_accounts(db, user.id)
+        totals = service.quota_totals(accounts_all)
+        initial = esc((user.name or user.email)[:1].upper())
         with st.sidebar:
-            st.markdown("## 🗂️ Penggabung Drive")
+            st.markdown(
+                f'<div class="brand"><div class="logo">{LOGO_SVG}</div>Penggabung Drive</div>'
+                f'<div class="userbox"><div class="avatar">{initial}</div><div>'
+                f'<div class="u-name">{esc(user.name or user.email.split("@")[0])}</div>'
+                f'<div class="u-mail">{esc(user.email)}</div></div></div>',
+                unsafe_allow_html=True,
+            )
             page = st.radio("Menu", MENU, label_visibility="collapsed", key="menu")
-            st.caption(user.email)
+            st.markdown(
+                f'<div class="side-storage"><div class="row"><b>{esc(fmt_bytes(totals.used))} terpakai</b>'
+                f'<span>{esc(fmt_bytes(totals.total))}</span></div>{bar_html(totals.used, totals.total)}</div>',
+                unsafe_allow_html=True,
+            )
+            if st.button("Keluar", icon=":material/logout:", key="logout_btn", width="stretch"):
+                logout()
         {
             MENU[0]: page_home,
             MENU[1]: page_files,

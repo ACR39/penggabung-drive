@@ -48,7 +48,7 @@ Buka <http://localhost:8501>, klik **Masuk dengan Google**, lalu setujui semua i
 
 1. Masuk dengan akun Google utama. Akun itu otomatis terhubung.
 2. **Pengaturan → Hubungkan akun Google lain** untuk menambah akun (pilih akun lain saat Google bertanya).
-3. **Pengaturan → Aturan pemilihan akun** untuk memilih mode unggah.
+3. Di menu **Kuota**, atur **Aturan unggah**: pilih mode, lalu ubah urutan akun dengan tombol Naik/Turun.
 4. **Unggah** berkas, **Berkas** untuk melihat, mencari, memindah, dan membagikan.
 
 ## Batasan yang perlu diketahui

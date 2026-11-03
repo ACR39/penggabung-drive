@@ -57,7 +57,7 @@ ok &= check("publik salah", at); assert any("tidak berlaku" in e.value for e in 
 at = AppTest.from_file(APP, default_timeout=30); at.query_params["code"] = "x"; at.query_params["state"] = "palsu"; at.run()
 ok &= check("callback palsu", at)
 # semua halaman setelah masuk
-for page in ["🏠 Beranda", "🗂️ Berkas", "⬆️ Unggah", "🔗 Dibagikan", "🗑️ Sampah", "⚙️ Pengaturan"]:
+for page in ["Kuota", "Berkas", "Unggah", "Dibagikan", "Sampah", "Pengaturan"]:
     at = AppTest.from_file(APP, default_timeout=30)
     at.session_state["user_id"] = user.id
     at.session_state["menu"] = page
@@ -65,13 +65,13 @@ for page in ["🏠 Beranda", "🗂️ Berkas", "⬆️ Unggah", "🔗 Dibagikan"
     ok &= check(page, at)
 # masuk ke folder
 at = AppTest.from_file(APP, default_timeout=30)
-at.session_state["user_id"] = user.id; at.session_state["menu"] = "🗂️ Berkas"; at.session_state["folder_id"] = fold.id
+at.session_state["user_id"] = user.id; at.session_state["menu"] = "Berkas"; at.session_state["folder_id"] = fold.id
 at.run(); ok &= check("berkas dalam folder", at)
 # pencarian
 at.text_input(key="search").set_value("foto").run(); ok &= check("pencarian", at)
 # buat folder
 at = AppTest.from_file(APP, default_timeout=30)
-at.session_state["user_id"] = user.id; at.session_state["menu"] = "🗂️ Berkas"; at.run()
+at.session_state["user_id"] = user.id; at.session_state["menu"] = "Berkas"; at.run()
 at.text_input(key="new_folder").set_value("Baru")
 [b for b in at.button if b.label == "Buat folder"][0].click().run()
 ok &= check("buat folder", at)
