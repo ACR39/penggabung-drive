@@ -264,3 +264,94 @@ def test_quota_totals_skip_unlimited_and_disconnected(env):
     assert service.quota_totals([a0, a1]).total == 100
     a0.total_bytes = None
     assert service.quota_totals([a0]).unlimited_accounts == 1
+
+
+# ------------------------------------------------------------ kecepatan: refresh paralel & latar belakang
+
+
+@pytest.fixture()
+def filedb(tmp_path, monkeypatch):
+    """Database SQLite berkas (bukan memori) supaya bisa dipakai beberapa thread."""
+    from core import db as dbmod
+
+    dbmod._session_factories.clear()
+    url = f"sqlite:///{tmp_path}/t.db"
+    settings = Settings("id", "secret", "http://localhost:8501", "k" * 40, url, (), 1)
+    db = get_session_factory(url)()
+    user = service.get_or_create_user(db, "a@x.com", None)
+    ids = []
+    for n in range(3):
+        acc = Account(user_id=user.id, google_sub=f"s{n}", email=f"a{n}@x.com", refresh_token_enc="x")
+        db.add(acc)
+        db.commit()
+        ids.append(acc.id)
+    return db, settings, user, ids
+
+
+def test_refresh_many_runs_in_parallel_and_reports_errors(filedb, monkeypatch):
+    import threading
+    import time
+
+    db, settings, user, ids = filedb
+    seen = set()
+
+    def fake(db_, settings_, acc):
+        seen.add(threading.get_ident())
+        time.sleep(0.3)
+        if acc.email == "a1@x.com":
+            raise service.AppError("token dicabut")
+        acc.used_bytes, acc.total_bytes, acc.last_synced_at = 5, 100, utcnow()
+        db_.commit()
+
+    monkeypatch.setattr(service, "refresh_quota", fake)
+    t0 = time.perf_counter()
+    errors = service.refresh_many(settings, ids)
+    took = time.perf_counter() - t0
+    assert errors == ["a1@x.com: token dicabut"]
+    assert took < 0.8, f"harus paralel (3 x 0,3 dtk), tetapi {took:.2f} dtk"
+    assert len(seen) == 3
+    db.expire_all()
+    assert sorted(a.used_bytes for a in service.list_accounts(db, user.id)) == [0, 5, 5]
+
+
+def test_refresh_in_background_returns_immediately_and_does_not_duplicate(filedb, monkeypatch):
+    import threading
+    import time
+
+    db, settings, user, ids = filedb
+    service._bg_inflight.clear()
+    service._bg_last_try.clear()
+    gate, calls = threading.Event(), []
+
+    def fake(db_, settings_, acc):
+        calls.append(acc.id)
+        gate.wait(2)
+
+    monkeypatch.setattr(service, "refresh_quota", fake)
+    t0 = time.perf_counter()
+    assert service.refresh_in_background(settings, ids) is True
+    assert time.perf_counter() - t0 < 0.1  # tidak menunggu Google
+    assert service.refresh_in_background(settings, ids) is False  # sudah berjalan / baru dicoba
+    gate.set()
+    for _ in range(50):
+        if not service._bg_inflight:
+            break
+        time.sleep(0.05)
+    assert sorted(calls) == sorted(ids)
+    assert not service._bg_inflight
+
+
+def test_stale_ids_and_accounts_list_is_cached_per_session(filedb):
+    from datetime import timedelta
+
+    db, settings, user, ids = filedb
+    first = service.list_accounts(db, user.id)
+    first[0].last_synced_at = utcnow()
+    first[1].last_synced_at = utcnow() - timedelta(hours=1)
+    assert service.stale_ids(first) == [first[1].id, first[2].id]
+    from core.db import STATS
+
+    STATS.reset()
+    service.list_accounts(db, user.id)
+    service.list_accounts(db, user.id, False)
+    assert STATS.snapshot()[0] == 0  # pemanggilan berikutnya tanpa kueri

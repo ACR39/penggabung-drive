@@ -51,6 +51,13 @@ Buka <http://localhost:8501>, klik **Masuk dengan Google**, lalu setujui semua i
 3. Di menu **Kuota**, atur **Aturan unggah**: pilih mode, lalu ubah urutan akun dengan tombol Naik/Turun.
 4. **Unggah** berkas, **Berkas** untuk melihat, mencari, memindah, dan membagikan.
 
+## Kalau terasa lambat
+
+- Isi `DEBUG = "1"` di Secrets. Di bawah sidebar akan tampil waktu total, jumlah kueri, dan waktu yang habis di database untuk setiap klik. Bila "ms di database" besar, penyebabnya jarak ke database.
+- Pilih **region database yang dekat dengan server Streamlit** (lihat lokasi proyek di Supabase/Neon). Setiap klik memakai 1 sampai 3 kueri, jadi tiap 100 ms jarak menambah sekitar 0,1 sampai 0,3 detik.
+- Di Supabase, pakai alamat **connection pooler**, bukan koneksi langsung.
+- Kuota Google disegarkan **di latar belakang** (bila lebih dari 5 menit), jadi halaman tidak menunggu Google. Angka terbaru terlihat pada klik berikutnya. Tombol *Segarkan* menyegarkan semua akun sekaligus.
+
 ## Batasan yang perlu diketahui
 
 - **Login tidak bertahan saat halaman dimuat ulang.** Streamlit tidak menyimpan sesi. Klik *Masuk dengan Google* lagi, biasanya langsung masuk tanpa mengetik apa pun.

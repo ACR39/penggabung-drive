@@ -7,13 +7,15 @@ from __future__ import annotations
 
 import html
 import secrets
+import time
+from dataclasses import dataclass
 
 import pandas as pd
 import streamlit as st
 
 from core import drive, service
 from core.config import Settings, load_settings
-from core.db import get_session_factory
+from core.db import STATS, get_session_factory
 from core.service import AppError, NeedsConsent
 from core.utils import file_icon, fmt_bytes, fmt_dt
 
@@ -21,8 +23,6 @@ st.set_page_config(page_title="Penggabung Drive", page_icon="🗂️", layout="w
 
 CSS = """
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
-html, body, .stApp, button, input, textarea { font-family:'Inter',sans-serif; }
 .stApp { background:linear-gradient(180deg,#f8f9fe 0%,#f2f3fa 100%); }
 header[data-testid="stHeader"] { background:transparent; }
 .stAppDeployButton, footer { display:none !important; }
@@ -135,6 +135,7 @@ MENU = ["Kuota", "Berkas", "Unggah", "Dibagikan", "Sampah", "Pengaturan"]
 
 def flash(kind: str, text: str) -> None:
     """Simpan pesan agar tetap tampil setelah st.rerun()."""
+    st.session_state.pop("_totals", None)  # ada perubahan -> hitung ulang ringkasan di sidebar
     st.session_state.setdefault("_flash", []).append((kind, text))
 
 
@@ -150,16 +151,28 @@ def login_url(settings: Settings, db, purpose: str, user_id: str | None, consent
     return url
 
 
+@dataclass
+class SessionUser:
+    id: str
+    email: str
+    name: str | None
+
+
 def current_user(db):
+    """Pengguna dari sesi (tanpa kueri database). Kueri hanya dilakukan sekali bila data sesi belum ada."""
     uid = st.session_state.get("user_id")
     if not uid:
         return None
+    if "user_email" in st.session_state:
+        return SessionUser(uid, st.session_state["user_email"], st.session_state.get("user_name"))
     from core.db import User
 
     user = db.get(User, uid)
     if user is None:
         st.session_state.pop("user_id", None)
-    return user
+        return None
+    st.session_state["user_email"], st.session_state["user_name"] = user.email, user.name
+    return SessionUser(user.id, user.email, user.name)
 
 
 def logout() -> None:
@@ -242,6 +255,7 @@ def handle_callback(settings: Settings, db) -> None:
     except AppError as exc:
         flash("err", str(exc))
     st.session_state["user_id"] = user.id
+    st.session_state["user_email"], st.session_state["user_name"] = user.email, user.name
     flash("ok", f"Akun {profile.get('email')} terhubung.")
 
 
@@ -296,12 +310,15 @@ def page_home(settings: Settings, db, user) -> None:
         st.write("")
         if st.button("Segarkan", icon=":material/refresh:", width="stretch"):
             with st.spinner("Menghubungi Google…"):
-                for msg in service.refresh_stale(db, settings, accounts, force=True):
+                ids = [a.id for a in accounts if a.status == "connected"]
+                for msg in service.refresh_many(settings, ids):
                     flash("err", msg)
+            flash("ok", "Kuota diperbarui.")
             st.rerun()
     show_flash()
-    for msg in service.refresh_stale(db, settings, accounts):
-        st.warning(msg)
+    for acc in accounts:
+        if acc.status == "connected" and acc.last_error:
+            st.warning(f"{acc.email}: {acc.last_error}")
     if not accounts:
         st.info("Belum ada akun. Buka Pengaturan untuk menghubungkan Google Drive.")
         return
@@ -639,6 +656,8 @@ def main() -> None:
         st.markdown("Isi lewat `.streamlit/secrets.toml` atau variabel lingkungan. Lihat README.")
         return
 
+    started = time.perf_counter()
+    STATS.reset()
     db = get_session_factory(settings.database_url)()
     try:
         share_token = st.query_params.get("s")
@@ -654,8 +673,6 @@ def main() -> None:
             login_page(settings, db)
             return
 
-        accounts_all = service.list_accounts(db, user.id)
-        totals = service.quota_totals(accounts_all)
         initial = esc((user.name or user.email)[:1].upper())
         with st.sidebar:
             st.markdown(
@@ -666,13 +683,6 @@ def main() -> None:
                 unsafe_allow_html=True,
             )
             page = st.radio("Menu", MENU, label_visibility="collapsed", key="menu")
-            st.markdown(
-                f'<div class="side-storage"><div class="row"><b>{esc(fmt_bytes(totals.used))} terpakai</b>'
-                f'<span>{esc(fmt_bytes(totals.total))}</span></div>{bar_html(totals.used, totals.total)}</div>',
-                unsafe_allow_html=True,
-            )
-            if st.button("Keluar", icon=":material/logout:", key="logout_btn", width="stretch"):
-                logout()
         {
             MENU[0]: page_home,
             MENU[1]: page_files,
@@ -681,8 +691,38 @@ def main() -> None:
             MENU[4]: page_trash,
             MENU[5]: page_settings,
         }[page](settings, db, user)
+
+        # Ringkasan sidebar dibuat setelah halaman, supaya daftar akun yang sudah dimuat halaman bisa dipakai ulang.
+        loaded = db.info.get("_accounts", {}).get((user.id, False))
+        cached = st.session_state.get("_totals")
+        if loaded is not None:
+            accounts_all = list(loaded)
+            totals = service.quota_totals(accounts_all)
+        elif cached and time.time() - cached[0] < 60:
+            accounts_all, totals = None, cached[1]
+        else:
+            accounts_all = service.list_accounts(db, user.id)
+            totals = service.quota_totals(accounts_all)
+        st.session_state["_totals"] = (time.time(), totals)
+        with st.sidebar:
+            st.markdown(
+                f'<div class="side-storage"><div class="row"><b>{esc(fmt_bytes(totals.used))} terpakai</b>'
+                f'<span>{esc(fmt_bytes(totals.total))}</span></div>{bar_html(totals.used, totals.total)}</div>',
+                unsafe_allow_html=True,
+            )
+            if st.button("Keluar", icon=":material/logout:", key="logout_btn", width="stretch"):
+                logout()
+        if accounts_all is not None:  # kuota basi disegarkan di latar belakang, halaman tidak menunggu
+            service.refresh_in_background(settings, service.stale_ids(accounts_all))
     finally:
         db.close()
+        if settings.debug:
+            queries, seconds = STATS.snapshot()
+            elapsed = time.perf_counter() - started
+            st.session_state["_stats"] = (queries, seconds, elapsed)
+            st.sidebar.caption(
+                f"⏱ {elapsed * 1000:.0f} ms total · {queries} kueri ({seconds * 1000:.0f} ms di database)"
+            )
 
 
 main()

@@ -2,12 +2,15 @@
 from __future__ import annotations
 
 import os
+import threading
+import time
 import uuid
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import Iterator, Optional
 
 from sqlalchemy import (
+    event,
     JSON,
     BigInteger,
     Boolean,
@@ -150,6 +153,37 @@ class OauthState(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
+class _Stats:
+    """Penghitung kueri per thread (dipakai mode DEBUG untuk mencari bagian yang lambat)."""
+
+    def __init__(self) -> None:
+        self._local = threading.local()
+
+    def reset(self) -> None:
+        self._local.queries = 0
+        self._local.seconds = 0.0
+
+    def add(self, seconds: float) -> None:
+        self._local.queries = getattr(self._local, "queries", 0) + 1
+        self._local.seconds = getattr(self._local, "seconds", 0.0) + seconds
+
+    def snapshot(self) -> tuple[int, float]:
+        return getattr(self._local, "queries", 0), getattr(self._local, "seconds", 0.0)
+
+
+STATS = _Stats()
+
+
+def _attach_timers(engine) -> None:
+    @event.listens_for(engine, "before_cursor_execute")
+    def _before(conn, cursor, statement, parameters, context, executemany):
+        conn.info["_t0"] = time.perf_counter()
+
+    @event.listens_for(engine, "after_cursor_execute")
+    def _after(conn, cursor, statement, parameters, context, executemany):
+        STATS.add(time.perf_counter() - conn.info.pop("_t0", time.perf_counter()))
+
+
 _session_factories: dict[str, sessionmaker] = {}
 
 
@@ -172,6 +206,7 @@ def get_session_factory(url: str) -> sessionmaker:
         else:
             kwargs["pool_pre_ping"] = True
         engine = create_engine(url, **kwargs)
+        _attach_timers(engine)
         Base.metadata.create_all(engine)
         _session_factories[url] = sessionmaker(engine, expire_on_commit=False)
     return _session_factories[url]

@@ -27,6 +27,7 @@ class Settings:
     database_url: str
     allowed_emails: tuple[str, ...]
     max_download_mb: int
+    debug: bool = False
 
     def missing(self) -> list[str]:
         """Nama pengaturan wajib yang belum diisi."""
@@ -58,4 +59,5 @@ def load_settings() -> Settings:
         database_url=_get("DATABASE_URL", "sqlite:///data/penggabung.db"),
         allowed_emails=emails,
         max_download_mb=max_mb,
+        debug=_get("DEBUG").strip().lower() in ("1", "true", "ya", "yes"),
     )

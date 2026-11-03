@@ -6,6 +6,9 @@ sehingga aman dipakai dari Streamlit (yang bisa menghentikan skrip kapan saja).
 from __future__ import annotations
 
 import secrets
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import timedelta
 from typing import Callable, Optional, Sequence
@@ -18,6 +21,7 @@ from . import drive
 from .config import Settings
 from .crypto import decrypt, encrypt
 from .db import (
+    get_session_factory,
     Account,
     File,
     Folder,
@@ -135,14 +139,24 @@ def upsert_account(
     acc.status = "connected"
     acc.last_error = None
     db.commit()
+    _forget_accounts(db)
     return acc
 
 
 def list_accounts(db: Session, user_id: str, connected_only: bool = False) -> list[Account]:
-    query = select(Account).where(Account.user_id == user_id)
-    if connected_only:
-        query = query.where(Account.status == "connected")
-    return list(db.scalars(query.order_by(Account.created_at)))
+    """Daftar akun. Disimpan per sesi database (satu kali jalan skrip) agar tidak mengulang kueri."""
+    cache = db.info.setdefault("_accounts", {})
+    key = (user_id, connected_only)
+    if key not in cache:
+        query = select(Account).where(Account.user_id == user_id)
+        if connected_only:
+            query = query.where(Account.status == "connected")
+        cache[key] = list(db.scalars(query.order_by(Account.created_at)))
+    return list(cache[key])
+
+
+def _forget_accounts(db: Session) -> None:
+    db.info.pop("_accounts", None)
 
 
 def service_for(db: Session, settings: Settings, acc: Account):
@@ -209,6 +223,75 @@ def refresh_stale(
     return errors
 
 
+def stale_ids(accounts: Sequence[Account]) -> list[str]:
+    return [
+        a.id
+        for a in accounts
+        if a.status == "connected"
+        and (a.last_synced_at is None or utcnow() - a.last_synced_at > STALE_AFTER)
+    ]
+
+
+def refresh_many(settings: Settings, account_ids: Sequence[str], max_workers: int = 4) -> list[str]:
+    """Segarkan kuota beberapa akun sekaligus. Tiap akun memakai thread dan sesi database sendiri."""
+    ids = list(account_ids)
+    if not ids:
+        return []
+    factory = get_session_factory(settings.database_url)
+
+    def work(account_id: str) -> Optional[str]:
+        db = factory()
+        try:
+            acc = db.get(Account, account_id)
+            if acc is None or acc.status != "connected":
+                return None
+            email = acc.email
+            try:
+                refresh_quota(db, settings, acc)
+            except AppError as exc:
+                return f"{email}: {exc}"
+            return None
+        finally:
+            db.close()
+
+    with ThreadPoolExecutor(max_workers=min(max_workers, len(ids))) as pool:
+        return [msg for msg in pool.map(work, ids) if msg]
+
+
+_bg_lock = threading.Lock()
+_bg_inflight: set[str] = set()
+_bg_last_try: dict[str, float] = {}
+BG_RETRY_SECONDS = 120
+
+
+def refresh_in_background(settings: Settings, account_ids: Sequence[str]) -> bool:
+    """Segarkan kuota tanpa membuat halaman menunggu. Hasilnya terlihat pada interaksi berikutnya."""
+    now = time.monotonic()
+    with _bg_lock:
+        ids = [
+            i
+            for i in account_ids
+            if i not in _bg_inflight and now - _bg_last_try.get(i, -1e9) > BG_RETRY_SECONDS
+        ]
+        _bg_inflight.update(ids)
+        for i in ids:
+            _bg_last_try[i] = now
+    if not ids:
+        return False
+
+    def run() -> None:
+        try:
+            refresh_many(settings, ids)
+        except Exception:
+            pass
+        finally:
+            with _bg_lock:
+                _bg_inflight.difference_update(ids)
+
+    threading.Thread(target=run, name="refresh-kuota", daemon=True).start()
+    return True
+
+
 @dataclass
 class QuotaTotals:
     total: int
@@ -244,6 +327,7 @@ def remove_account(db: Session, settings: Settings, user_id: str, account_id: st
         policy.priority_ids = [i for i in policy.priority_ids if i != account_id]
     db.delete(acc)  # file milik akun ini ikut terhapus dari database (bukan dari Drive)
     db.commit()
+    _forget_accounts(db)
 
 
 # ---------------------------------------------------------------- Aturan upload
