@@ -31,6 +31,7 @@ from .db import (
     utcnow,
 )
 from .routing import MODES, Candidate, pick_account
+from .ui_assets import COLORS, DEFAULT_COLOR, DEFAULT_ICON, FOLDER_ICONS
 
 STALE_AFTER = timedelta(minutes=5)
 EXPIRY_CHOICES: dict[str, Optional[int]] = {
@@ -406,6 +407,10 @@ def upload_batch(
                 )
             )
             acc.used_bytes = (acc.used_bytes or 0) + size
+            if folder_id:
+                target = db.get(Folder, folder_id)
+                if target is not None:
+                    target.updated_at = utcnow()
             db.commit()
             results.append(UploadResult(name, True, "Berhasil", acc.email))
         except Exception as exc:
@@ -531,7 +536,18 @@ def _owned_folder(db: Session, user_id: str, folder_id: Optional[str]) -> Option
     return folder
 
 
-def create_folder(db: Session, user_id: str, parent_id: Optional[str], name: str) -> Folder:
+def _valid_style(color: str, icon: str) -> tuple[str, str]:
+    return (color if color in COLORS else DEFAULT_COLOR, icon if icon in FOLDER_ICONS else DEFAULT_ICON)
+
+
+def create_folder(
+    db: Session,
+    user_id: str,
+    parent_id: Optional[str],
+    name: str,
+    color: str = DEFAULT_COLOR,
+    icon: str = DEFAULT_ICON,
+) -> Folder:
     name = _clean_name(name)
     _owned_folder(db, user_id, parent_id)
     clash = db.scalar(
@@ -541,10 +557,32 @@ def create_folder(db: Session, user_id: str, parent_id: Optional[str], name: str
     )
     if clash:
         raise AppError("Sudah ada folder dengan nama itu di sini.")
-    folder = Folder(user_id=user_id, parent_id=parent_id, name=name)
+    color, icon = _valid_style(color, icon)
+    folder = Folder(user_id=user_id, parent_id=parent_id, name=name, color=color, icon=icon, updated_at=utcnow())
     db.add(folder)
     db.commit()
     return folder
+
+
+def update_folder(
+    db: Session, user_id: str, folder_id: str, name: str, color: str, icon: str
+) -> None:
+    folder = _owned_folder(db, user_id, folder_id)
+    name = _clean_name(name)
+    clash = db.scalar(
+        select(Folder).where(
+            Folder.user_id == user_id,
+            _same(Folder.parent_id, folder.parent_id),
+            Folder.name == name,
+            Folder.id != folder.id,
+        )
+    )
+    if clash:
+        raise AppError("Sudah ada folder dengan nama itu di sini.")
+    folder.name = name
+    folder.color, folder.icon = _valid_style(color, icon)
+    folder.updated_at = utcnow()
+    db.commit()
 
 
 def rename_folder(db: Session, user_id: str, folder_id: str, name: str) -> None:
@@ -582,7 +620,14 @@ def list_files(
     query: Optional[str] = None,
     status: str = "active",
     limit: int = 300,
+    starred_only: bool = False,
+    recent: bool = False,
 ) -> list[tuple[File, str]]:
+    """Daftar berkas beserta email akunnya.
+
+    - query: cari nama di semua folder
+    - starred_only / recent: lintas folder (terbaru = urut dari yang paling baru dibuat)
+    """
     stmt = (
         select(File, Account.email)
         .join(Account, File.account_id == Account.id)
@@ -590,10 +635,25 @@ def list_files(
     )
     if query:
         stmt = stmt.where(File.name.ilike(_like(query.strip()), escape="\\"))
-    elif status == "active":
+    elif status == "active" and not (starred_only or recent):
         stmt = stmt.where(_same(File.folder_id, folder_id))
-    order = File.deleted_at.desc() if status == "trashed" else File.name
+    if starred_only:
+        stmt = stmt.where(File.starred.is_(True))
+    if status == "trashed":
+        order = File.deleted_at.desc()
+    elif recent:
+        order = File.created_at.desc()
+    else:
+        order = File.name
     return [(f, email) for f, email in db.execute(stmt.order_by(order).limit(limit))]
+
+
+def set_starred(db: Session, user_id: str, file_ids: Sequence[str], value: bool) -> int:
+    files = [f for f in _owned_files(db, user_id, file_ids) if f.status == "active"]
+    for item in files:
+        item.starred = value
+    db.commit()
+    return len(files)
 
 
 def _owned_files(db: Session, user_id: str, file_ids: Sequence[str]) -> list[File]:
@@ -607,6 +667,9 @@ def move_files(db: Session, user_id: str, file_ids: Sequence[str], folder_id: Op
     files = _owned_files(db, user_id, file_ids)
     for item in files:
         item.folder_id = folder_id
+    target = _owned_folder(db, user_id, folder_id)
+    if target is not None:
+        target.updated_at = utcnow()
     db.commit()
     return len(files)
 

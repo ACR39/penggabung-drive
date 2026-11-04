@@ -98,7 +98,10 @@ class Folder(Base):
         ForeignKey("folders.id"), nullable=True, index=True
     )
     name: Mapped[str] = mapped_column(String(255))
+    color: Mapped[str] = mapped_column(String(16), default="blue")
+    icon: Mapped[str] = mapped_column(String(16), default="folder")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True, default=utcnow)
 
 
 class File(Base):
@@ -114,6 +117,7 @@ class File(Base):
     mime_type: Mapped[str] = mapped_column(String(191), default="application/octet-stream")
     size_bytes: Mapped[int] = mapped_column(BigInteger, default=0)
     status: Mapped[str] = mapped_column(String(16), default="active")  # active | trashed | deleted
+    starred: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     deleted_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
@@ -190,11 +194,36 @@ def _normalize_url(url: str) -> str:
     return url
 
 
+# Kolom yang ditambahkan setelah rilis awal: (tabel, kolom, definisi SQL).
+# create_all tidak menambah kolom pada tabel yang sudah ada, jadi ditambahkan di sini bila belum ada.
+_MIGRATIONS = [
+    ("folders", "color", "VARCHAR(16) DEFAULT 'blue'"),
+    ("folders", "icon", "VARCHAR(16) DEFAULT 'folder'"),
+    ("folders", "updated_at", "TIMESTAMP"),
+    ("files", "starred", "BOOLEAN DEFAULT FALSE"),
+]
+
+
+def _migrate(engine) -> None:
+    inspector = inspect(engine)
+    existing = set(inspector.get_table_names())
+    cache: dict[str, set[str]] = {}
+    for table, column, ddl in _MIGRATIONS:
+        if table not in existing:
+            continue
+        if table not in cache:
+            cache[table] = {c["name"] for c in inspector.get_columns(table)}
+        if column not in cache[table]:
+            with engine.begin() as conn:
+                conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}"))
+
+
 def _ensure_schema(engine) -> None:
-    """Satu kueri untuk memeriksa tabel; create_all hanya dijalankan bila ada yang belum ada."""
+    """Buat tabel yang belum ada, lalu tambahkan kolom baru pada tabel lama (sekali per proses)."""
     existing = set(inspect(engine).get_table_names())
     if not set(Base.metadata.tables) <= existing:
         Base.metadata.create_all(engine)
+    _migrate(engine)
 
 
 def ping_db(url: str, times: int = 3) -> tuple[float, float]:

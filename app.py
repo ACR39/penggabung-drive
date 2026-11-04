@@ -14,6 +14,7 @@ import pandas as pd
 import streamlit as st
 
 from core import drive, oauthstate, service
+from core import ui_assets as ui
 from core.config import Settings, load_settings
 from sqlalchemy.exc import InterfaceError, OperationalError
 
@@ -75,6 +76,17 @@ header[data-testid="stHeader"] { background:transparent; }
 .chip.warn { background:#fee2e2; color:#991b1b; }
 .row-name { font-weight:600; color:#111827; word-break:break-all; }
 .login-card { background:#fff; border:1px solid #eceef6; border-radius:20px; padding:2.2rem 2rem 1.6rem; box-shadow:0 12px 40px rgba(30,41,90,.10); margin-top:3rem; }
+.fold { text-align:center; padding:.5rem .2rem .1rem; }
+.fold-ico { display:grid; place-items:center; height:64px; }
+.fold-name { font-weight:600; color:#111827; margin-top:.45rem; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.fold-sub { color:#6b7280; font-size:.8rem; margin-bottom:.45rem; }
+.fcard { text-align:center; padding:.1rem .1rem .3rem; }
+.ftype { width:58px; height:58px; border-radius:16px; display:grid; place-items:center; margin:.2rem auto .65rem; box-shadow:0 6px 14px rgba(30,41,90,.14); }
+.fname { font-weight:600; color:#111827; font-size:.92rem; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.fstar { color:#f59e0b; margin-left:.3rem; }
+.fsub { color:#6b7280; font-size:.78rem; margin:.15rem 0 .55rem; }
+.fchips { display:flex; flex-direction:column; align-items:center; gap:.3rem; }
+.fchip { background:#f1f3fb; color:#374151; border-radius:999px; padding:.12rem .65rem; font-size:.78rem; max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 @media (max-width:820px) { .stat-grid { grid-template-columns:repeat(2,1fr); } .acc-grid { grid-template-columns:1fr; } }
 </style>
 """
@@ -411,21 +423,188 @@ def folder_picker(db, user, label: str, key: str, exclude: str | None = None) ->
     return st.selectbox(label, [fid for fid, _ in options], format_func=lambda x: labels[x], key=key)
 
 
+SIZE_COLS = {"XS": 6, "SM": 5, "MD": 4, "LG": 3}
+PAGE_STEP = 24
+FILE_MODES = ["Folder ini", "Terbaru", "Berbintang"]
+
+
+def go_to(menu: str) -> None:
+    """Dipanggil lewat on_click, jadi boleh mengubah status menu sebelum widget dibuat ulang."""
+    st.session_state["menu"] = menu
+
+
+def clear_selection() -> None:
+    st.session_state["sel_round"] = st.session_state.get("sel_round", 0) + 1
+
+
+def folder_card_html(sub) -> str:
+    when = fmt_dt(sub.updated_at or sub.created_at)
+    return (
+        f'<div class="fold"><div class="fold-ico">{ui.folder_icon_html(sub.icon, sub.color)}</div>'
+        f'<div class="fold-name" title="{esc(sub.name)}">{esc(sub.name)}</div>'
+        f'<div class="fold-sub">Diperbarui {esc(when)}</div></div>'
+    )
+
+
+def file_card_html(item, email) -> str:
+    kind = ui.file_kind(item.mime_type, item.name)
+    star = '<span class="fstar">★</span>' if item.starred else ""
+    return (
+        f'<div class="fcard">{ui.file_icon_html(kind)}'
+        f'<div class="fname" title="{esc(item.name)}">{esc(item.name)}{star}</div>'
+        f'<div class="fsub">{esc(fmt_dt(item.created_at))}</div>'
+        f'<div class="fchips"><span class="fchip">{esc(fmt_bytes(item.size_bytes))}</span>'
+        f'<span class="fchip" title="{esc(email)}">{esc(email)}</span></div></div>'
+    )
+
+
+def style_pickers(prefix: str, color: str, icon: str) -> tuple[str, str]:
+    colors = list(ui.COLORS)
+    icons = list(ui.FOLDER_ICONS)
+    c = st.selectbox(
+        "Warna", colors, index=colors.index(color) if color in colors else 0,
+        format_func=lambda k: ui.COLORS[k][1], key=f"{prefix}_color",
+    )
+    i = st.selectbox(
+        "Ikon", icons, index=icons.index(icon) if icon in icons else 0,
+        format_func=lambda k: ui.FOLDER_ICONS[k], key=f"{prefix}_icon",
+    )
+    return c, i
+
+
+def selection_bar(settings: Settings, db, user, picked) -> None:
+    if not picked:
+        return
+    ids = [f.id for f in picked]
+    with st.container(border=True):
+        st.markdown(f"**{len(picked)} dipilih**")
+        a = st.columns([3, 1.3, 1.6, 1.5, 1.1])
+        with a[0]:
+            dest = folder_picker(db, user, "Pindahkan ke", "mv_dest")
+        a[1].write("")
+        a[1].write("")
+        if a[1].button("Pindahkan", width="stretch"):
+            flash("ok", f"{service.move_files(db, user.id, ids, dest)} berkas dipindahkan.")
+            clear_selection()
+            st.rerun()
+        all_starred = all(f.starred for f in picked)
+        a[2].write("")
+        a[2].write("")
+        if a[2].button("Hapus bintang" if all_starred else "Beri bintang", icon=":material/star:", width="stretch"):
+            service.set_starred(db, user.id, ids, not all_starred)
+            clear_selection()
+            st.rerun()
+        a[3].write("")
+        a[3].write("")
+        if a[3].button("Buang", icon=":material/delete:", width="stretch"):
+            flash("ok", f"{service.trash_files(db, user.id, ids)} berkas dibuang ke sampah.")
+            clear_selection()
+            st.rerun()
+        a[4].write("")
+        a[4].write("")
+        if a[4].button("Batal", width="stretch"):
+            clear_selection()
+            st.rerun()
+        if len(picked) != 1:
+            return
+        item = picked[0]
+        st.divider()
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            new_name = st.text_input("Ganti nama", value=item.name, key=f"ren_{item.id}")
+            if st.button("Simpan nama"):
+                try:
+                    with st.spinner("Mengganti nama di Google Drive…"):
+                        service.rename_file(db, settings, user.id, item.id, new_name)
+                    flash("ok", "Nama berkas diganti.")
+                except AppError as exc:
+                    flash("err", str(exc))
+                st.rerun()
+        with c2:
+            st.write("Unduh")
+            dl_key = f"dl_{item.id}"
+            if dl_key in st.session_state:
+                data, name, mime = st.session_state[dl_key]
+                st.download_button("Unduh sekarang", data, file_name=name, mime=mime, type="primary", icon=":material/download:")
+            elif st.button("Siapkan unduhan"):
+                try:
+                    with st.spinner("Mengambil dari Google Drive…"):
+                        st.session_state[dl_key] = service.download_file(db, settings, item)
+                    st.rerun()
+                except AppError as exc:
+                    st.error(str(exc))
+        with c3:
+            label = st.selectbox("Masa berlaku tautan", list(service.EXPIRY_CHOICES), key=f"exp_{item.id}")
+            if st.button("Buat tautan berbagi", icon=":material/link:"):
+                try:
+                    share = service.create_share(db, user.id, item.id, service.EXPIRY_CHOICES[label])
+                    st.session_state["new_share"] = share.token
+                except AppError as exc:
+                    st.error(str(exc))
+            if st.session_state.get("new_share"):
+                st.code(f"{settings.app_url}/?s={st.session_state['new_share']}", language=None)
+
+
+def sync_all(db, settings: Settings, user) -> None:
+    created = updated = removed = 0
+    with st.spinner("Membaca folder PenggabungDrive di tiap akun…"):
+        for acc in service.list_accounts(db, user.id, connected_only=True):
+            try:
+                out = service.sync_account_files(db, settings, acc)
+                created, updated, removed = created + out["dibuat"], updated + out["diperbarui"], removed + out["dihapus"]
+            except AppError as exc:
+                flash("err", f"{acc.email}: {exc}")
+    flash("ok", f"Sinkron selesai: {created} baru, {updated} diperbarui, {removed} hilang.")
+
+
 def page_files(settings: Settings, db, user) -> None:
-    page_header("Berkas", "Cari, atur, dan bagikan berkas dari semua akun.")
+    page_header("Berkas", "Semua berkas dari semua akun, dalam satu tempat.")
     show_flash()
     folder_id = st.session_state.get("folder_id")
     crumbs = service.breadcrumb(db, user.id, folder_id)
     if folder_id and not crumbs:
         folder_id = st.session_state["folder_id"] = None
 
-    # cari + navigasi
-    search = st.text_input("🔍 Cari berkas di semua akun", key="search", placeholder="ketik sebagian nama…")
-    searching = bool(search.strip())
+    # ---- bilah alat
+    tools = st.columns([4, 2.3, 1.4, 1.8, 1.3])
+    search = tools[0].text_input(
+        "Cari", key="search", placeholder="Cari berkas di semua akun…", label_visibility="collapsed"
+    )
+    size = (
+        tools[1].segmented_control("Ukuran kartu", list(SIZE_COLS), default="MD", key="files_size", label_visibility="collapsed")
+        or "MD"
+    )
+    tools[2].button("Unggah", icon=":material/upload:", type="primary", width="stretch", on_click=go_to, args=("Unggah",))
+    with tools[3].popover("Folder baru", icon=":material/create_new_folder:", width="stretch"):
+        nf_name = st.text_input("Nama folder", key="nf_name")
+        nf_color, nf_icon = style_pickers("nf", ui.DEFAULT_COLOR, ui.DEFAULT_ICON)
+        if st.button("Buat folder", type="primary", key="nf_make"):
+            try:
+                service.create_folder(db, user.id, folder_id, nf_name, nf_color, nf_icon)
+                flash("ok", f"Folder “{nf_name.strip()}” dibuat.")
+            except AppError as exc:
+                flash("err", str(exc))
+            st.rerun()
+    if tools[4].button("Sinkron", icon=":material/sync:", width="stretch"):
+        sync_all(db, settings, user)
+        st.rerun()
 
-    if not searching:
+    row = st.columns([5, 1.7])
+    mode = (
+        row[0].segmented_control("Mode", FILE_MODES, default=FILE_MODES[0], key="files_mode", label_visibility="collapsed")
+        or FILE_MODES[0]
+    )
+    view = (
+        row[1].segmented_control("Tampilan", ["Kisi", "Daftar"], default="Kisi", key="files_view", label_visibility="collapsed")
+        or "Kisi"
+    )
+    searching = bool(search.strip())
+    browsing = mode == FILE_MODES[0] and not searching
+
+    # ---- folder (hanya saat menjelajah)
+    if browsing:
         path = st.columns([1] * min(len(crumbs) + 1, 6) + [max(6 - len(crumbs), 1)])
-        if path[0].button("🏠 Beranda", key="bc_root"):
+        if path[0].button("Beranda", icon=":material/home:", key="bc_root"):
             st.session_state["folder_id"] = None
             st.rerun()
         for i, crumb in enumerate(crumbs[-5:], start=1):
@@ -434,115 +613,91 @@ def page_files(settings: Settings, db, user) -> None:
                 st.rerun()
 
         subs = service.list_subfolders(db, user.id, folder_id)
-        if subs:
-            grid = st.columns(4)
-            for i, sub in enumerate(subs):
-                if grid[i % 4].button(f"📁 {sub.name}", key=f"open_{sub.id}", width="stretch"):
-                    st.session_state["folder_id"] = sub.id
-                    st.rerun()
-        with st.expander("Kelola folder"):
-            new_name = st.text_input("Folder baru di sini", key="new_folder")
-            if st.button("Buat folder"):
-                try:
-                    service.create_folder(db, user.id, folder_id, new_name)
-                    flash("ok", f"Folder “{new_name.strip()}” dibuat.")
-                except AppError as exc:
-                    flash("err", str(exc))
-                st.rerun()
-            if folder_id:
-                ren = st.text_input("Ganti nama folder ini", value=crumbs[-1].name, key=f"ren_f_{folder_id}")
-                cols = st.columns(2)
-                if cols[0].button("Simpan nama"):
+        for start in range(0, len(subs), 4):
+            cols = st.columns(4)
+            for col, sub in zip(cols, subs[start:start + 4]):
+                with col, st.container(border=True):
+                    st.markdown(folder_card_html(sub), unsafe_allow_html=True)
+                    if st.button("Buka", key=f"open_{sub.id}", width="stretch"):
+                        st.session_state["folder_id"] = sub.id
+                        st.rerun()
+        if folder_id:
+            with st.expander("Ubah folder ini"):
+                current = crumbs[-1]
+                ren = st.text_input("Nama", value=current.name, key=f"ren_f_{folder_id}")
+                e_color, e_icon = style_pickers(f"ef_{folder_id}", current.color, current.icon)
+                b = st.columns(2)
+                if b[0].button("Simpan perubahan", key=f"ef_save_{folder_id}"):
                     try:
-                        service.rename_folder(db, user.id, folder_id, ren)
-                        flash("ok", "Nama folder diganti.")
+                        service.update_folder(db, user.id, folder_id, ren, e_color, e_icon)
+                        flash("ok", "Folder diperbarui.")
                     except AppError as exc:
                         flash("err", str(exc))
                     st.rerun()
-                if cols[1].button("Hapus folder ini (isi naik ke induk)"):
+                if b[1].button("Hapus folder (isi naik ke induk)", key=f"ef_del_{folder_id}"):
                     st.session_state["folder_id"] = service.delete_folder(db, user.id, folder_id)
                     flash("ok", "Folder dihapus. Isinya dipindah ke folder induk.")
                     st.rerun()
 
-    rows = service.list_files(db, user.id, folder_id, search if searching else None)
+    # ---- berkas
+    sig = (folder_id, mode, search.strip())
+    if st.session_state.get("_files_sig") != sig:
+        st.session_state["_files_sig"] = sig
+        st.session_state["files_limit"] = PAGE_STEP
+    limit = st.session_state.get("files_limit", PAGE_STEP)
+    rows = service.list_files(
+        db, user.id, folder_id, search if searching else None, limit=limit + 1,
+        starred_only=(mode == "Berbintang" and not searching),
+        recent=(mode == "Terbaru" and not searching),
+    )
+    more = len(rows) > limit
+    rows = rows[:limit]
     if not rows:
-        st.info("Tidak ada berkas." if searching else "Folder ini masih kosong. Unggah berkas lewat menu Unggah.")
+        st.info(
+            "Tidak ada berkas yang cocok." if searching
+            else "Belum ada berkas berbintang." if mode == "Berbintang"
+            else "Belum ada berkas. Tekan Unggah untuk menambahkan." if mode == "Terbaru" or folder_id is None
+            else "Folder ini masih kosong."
+        )
         return
-    frame = pd.DataFrame(
-        [
-            {
-                "Nama": f"{file_icon(f.mime_type)} {f.name}",
-                "Ukuran": fmt_bytes(f.size_bytes),
-                "Akun": email,
-                "Tanggal": fmt_dt(f.created_at),
-            }
-            for f, email in rows
-        ]
-    )
-    event = st.dataframe(
-        frame,
-        hide_index=True,
-        width="stretch",
-        on_select="rerun",
-        selection_mode="multi-row",
-        key=f"tbl_{folder_id}_{search}",
-    )
-    picked = [rows[i][0] for i in event.selection.rows if i < len(rows)]
-    if not picked:
-        st.caption(f"{len(rows)} berkas. Pilih baris untuk melihat aksi.")
-        return
-    st.markdown(f"**{len(picked)} dipilih**")
-    ids = [f.id for f in picked]
-    act = st.columns(3)
-    with act[0]:
-        dest = folder_picker(db, user, "Pindahkan ke", f"mv_{folder_id}")
-        if st.button("Pindahkan"):
-            n = service.move_files(db, user.id, ids, dest)
-            flash("ok", f"{n} berkas dipindahkan.")
+
+    rnd = st.session_state.get("sel_round", 0)
+    if view == "Kisi":
+        picked = [f for f, _ in rows if st.session_state.get(f"sel{rnd}_{f.id}")]
+        selection_bar(settings, db, user, picked)
+        ncols = SIZE_COLS[size]
+        for start in range(0, len(rows), ncols):
+            cols = st.columns(ncols)
+            for col, (item, email) in zip(cols, rows[start:start + ncols]):
+                with col, st.container(border=True):
+                    st.checkbox("Pilih", key=f"sel{rnd}_{item.id}", label_visibility="collapsed")
+                    st.markdown(file_card_html(item, email), unsafe_allow_html=True)
+    else:
+        frame = pd.DataFrame(
+            [
+                {
+                    "": "★" if f.starred else "",
+                    "Nama": f"{file_icon(f.mime_type)} {f.name}",
+                    "Ukuran": fmt_bytes(f.size_bytes),
+                    "Akun": email,
+                    "Tanggal": fmt_dt(f.created_at),
+                }
+                for f, email in rows
+            ]
+        )
+        event = st.dataframe(
+            frame, hide_index=True, width="stretch", on_select="rerun", selection_mode="multi-row",
+            key=f"tbl{rnd}_{folder_id}_{mode}_{search}",
+        )
+        picked = [rows[i][0] for i in event.selection.rows if i < len(rows)]
+        selection_bar(settings, db, user, picked)
+
+    if more:
+        if st.button("Tampilkan lebih banyak"):
+            st.session_state["files_limit"] = limit + PAGE_STEP
             st.rerun()
-    with act[1]:
-        st.write("")
-        st.write("")
-        if st.button("🗑️ Buang ke sampah"):
-            n = service.trash_files(db, user.id, ids)
-            flash("ok", f"{n} berkas dibuang ke sampah.")
-            st.rerun()
-    if len(picked) == 1:
-        item = picked[0]
-        with act[2]:
-            new_name = st.text_input("Ganti nama", value=item.name, key=f"ren_{item.id}")
-            if st.button("Simpan nama berkas"):
-                try:
-                    with st.spinner("Mengganti nama di Google Drive…"):
-                        service.rename_file(db, settings, user.id, item.id, new_name)
-                    flash("ok", "Nama berkas diganti.")
-                except AppError as exc:
-                    flash("err", str(exc))
-                st.rerun()
-        st.divider()
-        c1, c2 = st.columns(2)
-        with c1:
-            dl_key = f"dl_{item.id}"
-            if dl_key in st.session_state:
-                data, name, mime = st.session_state[dl_key]
-                st.download_button("⬇️ Unduh sekarang", data, file_name=name, mime=mime, type="primary")
-            elif st.button("Siapkan unduhan"):
-                try:
-                    with st.spinner("Mengambil dari Google Drive…"):
-                        st.session_state[dl_key] = service.download_file(db, settings, item)
-                    st.rerun()
-                except AppError as exc:
-                    st.error(str(exc))
-        with c2:
-            label = st.selectbox("Masa berlaku tautan", list(service.EXPIRY_CHOICES), key=f"exp_{item.id}")
-            if st.button("Buat tautan berbagi"):
-                try:
-                    share = service.create_share(db, user.id, item.id, service.EXPIRY_CHOICES[label])
-                    st.session_state["new_share"] = share.token
-                except AppError as exc:
-                    st.error(str(exc))
-            if st.session_state.get("new_share"):
-                st.code(f"{settings.app_url}/?s={st.session_state['new_share']}", language=None)
+    else:
+        st.caption(f"{len(rows)} berkas.")
 
 
 def page_upload(settings: Settings, db, user) -> None:

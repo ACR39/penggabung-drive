@@ -69,11 +69,21 @@ at.session_state["user_id"] = user.id; at.session_state["menu"] = "Berkas"; at.s
 at.run(); ok &= check("berkas dalam folder", at)
 # pencarian
 at.text_input(key="search").set_value("foto").run(); ok &= check("pencarian", at)
-# buat folder
+# buat folder (popover)
 at = AppTest.from_file(APP, default_timeout=30)
 at.session_state["user_id"] = user.id; at.session_state["menu"] = "Berkas"; at.run()
-at.text_input(key="new_folder").set_value("Baru")
-[b for b in at.button if b.label == "Buat folder"][0].click().run()
+at.text_input(key="nf_name").set_value("Baru")
+at.button(key="nf_make").click().run()
 ok &= check("buat folder", at)
+# mode, tampilan, ukuran, pilih berkas
+for key, val in [("files_mode", "Terbaru"), ("files_mode", "Berbintang"), ("files_view", "Daftar"), ("files_size", "LG")]:
+    at = AppTest.from_file(APP, default_timeout=30)
+    at.session_state["user_id"] = user.id; at.session_state["menu"] = "Berkas"; at.session_state[key] = val
+    at.run(); ok &= check(f"berkas {key}={val}", at)
+at = AppTest.from_file(APP, default_timeout=30)
+at.session_state["user_id"] = user.id; at.session_state["menu"] = "Berkas"; at.run()
+boxes = [c for c in at.checkbox if str(c.key).startswith("sel")]
+if boxes:
+    boxes[0].check().run(); ok &= check("pilih berkas", at)
 print("folder:", [f.name for f in service.list_subfolders(get_session_factory(s.database_url)(), user.id, None)])
 sys.exit(0 if ok else 1)

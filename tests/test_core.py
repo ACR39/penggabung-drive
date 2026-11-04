@@ -474,3 +474,94 @@ def test_insufficient_permission_marks_account_for_reconnect(env, monkeypatch):
     res = service.upload_batch(db, settings, user.id, [("x.txt", "t/p", 5, io.BytesIO(b"1"))], None)
     assert not res[0].ok and "Izin Google Drive" in res[0].message
     assert a1.status == "reauth"  # akun yang terpilih untuk unggahan ikut ditandai
+
+
+# ------------------------------------------------------------ fitur All Files: migrasi, bintang, terbaru, gaya folder
+
+
+def test_migration_adds_new_columns_to_an_old_database_and_keeps_data(tmp_path):
+    import sqlite3
+
+    from core import db as dbmod
+
+    path = tmp_path / "lama.db"
+    con = sqlite3.connect(path)
+    con.executescript(
+        """
+        CREATE TABLE users (id VARCHAR(36) PRIMARY KEY, email VARCHAR(191), name VARCHAR(191), created_at DATETIME);
+        CREATE TABLE folders (id VARCHAR(36) PRIMARY KEY, user_id VARCHAR(36), parent_id VARCHAR(36),
+                              name VARCHAR(255), created_at DATETIME);
+        CREATE TABLE files (id VARCHAR(36) PRIMARY KEY, user_id VARCHAR(36), account_id VARCHAR(36), folder_id VARCHAR(36),
+                            drive_file_id VARCHAR(191), name VARCHAR(255), mime_type VARCHAR(191), size_bytes BIGINT,
+                            status VARCHAR(16), created_at DATETIME, deleted_at DATETIME);
+        INSERT INTO users VALUES ('u1','a@x.com',NULL,'2026-01-01');
+        INSERT INTO folders VALUES ('f1','u1',NULL,'Dokumen','2026-01-01');
+        INSERT INTO files VALUES ('x1','u1','a1',NULL,'d1','lama.txt','text/plain',5,'active','2026-01-01',NULL);
+        """
+    )
+    con.commit()
+    con.close()
+
+    dbmod._session_factories.clear()
+    db = dbmod.get_session_factory(f"sqlite:///{path}")()
+    folder = db.get(dbmod.Folder, "f1")
+    item = db.get(dbmod.File, "x1")
+    assert folder.name == "Dokumen" and folder.color == "blue" and folder.icon == "folder"
+    assert item.name == "lama.txt" and item.starred in (False, 0)
+    # menjalankan lagi tidak error (idempotent)
+    dbmod._session_factories.clear()
+    dbmod.get_session_factory(f"sqlite:///{path}")
+
+
+def test_star_and_recent_and_folder_style(env):
+    db, settings, user, *_ = env
+    for name in ["a.txt", "b.txt", "c.txt"]:
+        service.upload_batch(db, settings, user.id, [(name, "text/plain", 1, io.BytesIO(b"1"))], None)
+    files = {f.name: f for f, _ in service.list_files(db, user.id)}
+    # urutan "terbaru": yang dibuat paling akhir lebih dulu
+    base = utcnow()
+    for i, name in enumerate(["a.txt", "b.txt", "c.txt"]):
+        files[name].created_at = base + timedelta(seconds=i)
+    db.commit()
+    assert [f.name for f, _ in service.list_files(db, user.id, recent=True)] == ["c.txt", "b.txt", "a.txt"]
+    assert len(service.list_files(db, user.id, recent=True, limit=2)) == 2
+
+    assert service.set_starred(db, user.id, [files["b.txt"].id], True) == 1
+    assert [f.name for f, _ in service.list_files(db, user.id, starred_only=True)] == ["b.txt"]
+    service.set_starred(db, user.id, [files["b.txt"].id], False)
+    assert service.list_files(db, user.id, starred_only=True) == []
+    other = service.get_or_create_user(db, "lain@x.com", None)
+    assert service.set_starred(db, other.id, [files["a.txt"].id], True) == 0  # bukan milik
+
+    f = service.create_folder(db, user.id, None, "Video", color="purple", icon="film")
+    assert (f.color, f.icon) == ("purple", "film")
+    bad = service.create_folder(db, user.id, None, "Aneh", color="neon", icon="<script>")
+    assert (bad.color, bad.icon) == ("blue", "folder")  # nilai tidak dikenal diganti bawaan
+    service.update_folder(db, user.id, f.id, "Film", "red", "heart")
+    assert (f.name, f.color, f.icon) == ("Film", "red", "heart")
+    with pytest.raises(service.AppError):
+        service.update_folder(db, user.id, f.id, "Aneh", "red", "heart")  # nama kembar
+
+
+def test_moving_or_uploading_bumps_folder_updated_at(env):
+    db, settings, user, *_ = env
+    folder = service.create_folder(db, user.id, None, "Dokumen")
+    folder.updated_at = datetime(2020, 1, 1)
+    db.commit()
+    service.upload_batch(db, settings, user.id, [("a.txt", "t/p", 1, io.BytesIO(b"1"))], folder.id)
+    assert folder.updated_at > datetime(2025, 1, 1)
+
+
+def test_ui_assets():
+    from core import ui_assets as ui
+
+    assert ui.file_kind("video/mp4") == "video"
+    assert ui.file_kind("application/octet-stream", "foto.JPG") == "image"
+    assert ui.file_kind("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "x.xlsx") == "sheet"
+    assert ui.file_kind("", "laporan.pdf") == "pdf"
+    assert ui.file_kind("application/x-unknown", "noext") == "other"
+    for name in ui.FOLDER_ICONS:
+        assert ui.svg(name).startswith("<svg") and "<path" in ui.svg(name) or "<rect" in ui.svg(name)
+    assert ui.color_hex("tidak-ada") == ui.color_hex("blue")
+    assert "<script" not in ui.folder_icon_html("<script>", "x")
+    assert ui.esc("<b>&") == "&lt;b&gt;&amp;"

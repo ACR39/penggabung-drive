@@ -103,3 +103,12 @@ core/drive.py     pembungkus Google OAuth + Drive API
 core/db.py        model database SQLAlchemy
 core/crypto.py    enkripsi token
 ```
+
+## Halaman Berkas (gaya "All Files")
+
+- Kartu folder berwarna dengan ikon pilihan dan tanggal diperbarui (warna/ikon bisa diubah lewat "Ubah folder ini").
+- Mode **Folder ini / Terbaru / Berbintang**, tampilan **Kisi / Daftar**, ukuran kartu **XS / SM / MD / LG**.
+- Kartu berkas dengan kotak centang, ikon jenis berkas, tanggal, ukuran, dan akun asal.
+- Tombol Unggah, Folder baru, dan Sinkron di bilah alat.
+- Basis data lama otomatis diperbarui (kolom warna, ikon, bintang ditambahkan sendiri).
+- Ikon dan warna dibuat sendiri, bukan salinan dari 9Drive.
