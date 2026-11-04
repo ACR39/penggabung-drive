@@ -112,3 +112,20 @@ core/crypto.py    enkripsi token
 - Tombol Unggah, Folder baru, dan Sinkron di bilah alat.
 - Basis data lama otomatis diperbarui (kolom warna, ikon, bintang ditambahkan sendiri).
 - Ikon dan warna dibuat sendiri, bukan salinan dari 9Drive.
+
+## Galeri foto yang bisa dibagikan
+
+Menu **Galeri**: pilih foto, beri judul dan masa berlaku, lalu bagikan tautan `?g=kode`. Foto diambil server aplikasi
+dari penyimpanan lalu ditampilkan di halaman aplikasi, jadi alamat Google Drive/Yandex tidak pernah terlihat pengunjung.
+Thumbnail dibuat dengan Pillow dan disimpan sementara di memori. Maksimal 100 foto per galeri, foto asli maksimal 25 MB.
+Opsi mengizinkan unduh bersifat per galeri. Pengunjung tetap bisa menyimpan foto yang tampil.
+
+## Yandex Disk (opsional)
+
+1. Buat aplikasi di https://oauth.yandex.com. Izin: `cloud_api:disk.app_folder`, `login:info`, `login:email`.
+   Redirect URI isi sama persis dengan `APP_URL`.
+2. Isi `YANDEX_CLIENT_ID` dan `YANDEX_CLIENT_SECRET` di Secrets, lalu reboot.
+3. Di Pengaturan tekan **Hubungkan Yandex Disk**.
+
+Aplikasi hanya memakai folder khusus aplikasinya di Yandex Disk. Akun Yandex ikut dalam aturan unggah otomatis,
+kuota gabungan, galeri, dan tautan berbagi. Bagian Yandex diuji dengan respons tiruan, belum dengan akun sungguhan.

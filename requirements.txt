@@ -7,3 +7,4 @@ cryptography
 SQLAlchemy>=2.0
 requests
 psycopg2-binary
+Pillow>=10

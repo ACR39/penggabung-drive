@@ -13,7 +13,7 @@ from dataclasses import dataclass
 import pandas as pd
 import streamlit as st
 
-from core import drive, oauthstate, service
+from core import drive, oauthstate, service, yandex
 from core import ui_assets as ui
 from core.config import Settings, load_settings
 from sqlalchemy.exc import InterfaceError, OperationalError
@@ -22,7 +22,7 @@ from core.db import STATS, get_session_factory, ping_db
 from core.service import AppError, NeedsConsent
 from core.utils import file_icon, fmt_bytes, fmt_dt
 
-st.set_page_config(page_title="Penggabung Drive", page_icon="🗂️", layout="wide")
+st.set_page_config(page_title="Penggabung Drive", page_icon="🗂️", layout="wide", initial_sidebar_state="collapsed")
 
 CSS = """
 <style>
@@ -87,6 +87,14 @@ header[data-testid="stHeader"] { background:transparent; }
 .fsub { color:#6b7280; font-size:.78rem; margin:.15rem 0 .55rem; }
 .fchips { display:flex; flex-direction:column; align-items:center; gap:.3rem; }
 .fchip { background:#f1f3fb; color:#374151; border-radius:999px; padding:.12rem .65rem; font-size:.78rem; max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+@media (max-width:640px) {
+  .block-container { padding:1rem .8rem 3rem !important; }
+  [data-testid="stHorizontalBlock"] { flex-wrap:wrap !important; gap:.5rem !important; }
+  [data-testid="stHorizontalBlock"] > [data-testid="stColumn"] { min-width:calc(50% - .5rem) !important; flex:1 1 calc(50% - .5rem) !important; }
+  .page-title { font-size:1.35rem !important; }
+  [data-testid="stHorizontalBlock"]:has(.login-mark) > [data-testid="stColumn"]:not(:has(.login-mark)) { display:none !important; }
+  [data-testid="stHorizontalBlock"]:has(.login-mark) > [data-testid="stColumn"] { flex:1 1 100% !important; min-width:100% !important; }
+}
 @media (max-width:820px) { .stat-grid { grid-template-columns:repeat(2,1fr); } .acc-grid { grid-template-columns:1fr; } }
 </style>
 """
@@ -141,7 +149,7 @@ def account_card_html(acc) -> str:
     )
 
 
-MENU = ["Kuota", "Berkas", "Unggah", "Dibagikan", "Sampah", "Pengaturan"]
+MENU = ["Kuota", "Berkas", "Unggah", "Dibagikan", "Galeri", "Sampah", "Pengaturan"]
 
 
 # ------------------------------------------------------------------ pembantu
@@ -224,6 +232,38 @@ def public_page(settings: Settings, db, token: str) -> None:
 # ------------------------------------------------------------------ login & callback
 
 
+@dataclass
+class _YandexCreds:
+    """Bentuk sama dengan kredensial Google yang dipakai service.upsert_account."""
+
+    token: str
+    refresh_token: str | None
+    expiry: object
+
+
+def handle_yandex_callback(settings: Settings, db, code: str, pending) -> None:
+    from core.db import User
+
+    user = db.get(User, pending.user_id or "")
+    if user is None:
+        flash("err", "Pengguna tidak ditemukan. Masuk dulu.")
+        return
+    try:
+        token, profile = yandex.exchange_code(settings, code)
+        creds = _YandexCreds(token["access_token"], token.get("refresh_token"), yandex.expiry_from(token))
+        acc = service.upsert_account(db, settings, user, profile, creds, provider="yandex")
+        service.refresh_quota(db, settings, acc)
+    except NeedsConsent as exc:
+        flash("err", str(exc))
+        return
+    except AppError as exc:
+        flash("err", str(exc))
+    except Exception as exc:
+        flash("err", f"Gagal menghubungkan Yandex: {drive.friendly_error(exc)}")
+        return
+    flash("ok", f"Akun Yandex {profile.get('email')} terhubung.")
+
+
 def handle_callback(settings: Settings, db) -> None:
     params = st.query_params
     code, state, err = params.get("code"), params.get("state"), params.get("error")
@@ -234,6 +274,9 @@ def handle_callback(settings: Settings, db) -> None:
     pending = oauthstate.read_state(settings.encryption_key, state or "")
     if not pending:
         flash("err", "Sesi masuk sudah habis atau tidak dikenal. Silakan coba lagi.")
+        return
+    if pending.purpose == "connect_yandex":
+        handle_yandex_callback(settings, db, code or "", pending)
         return
     try:
         creds, profile = drive.exchange_code(settings, code or "", pending.code_verifier)
@@ -299,8 +342,9 @@ def db_ping_caption(settings: Settings) -> None:
 
 
 def login_page(settings: Settings) -> None:
-    left, mid, right = st.columns([1, 1.6, 1])
+    left, mid, right = st.columns([1, 1.6, 1])  # CSS membuatnya satu kolom di hp
     with mid:
+        st.markdown('<span class="login-mark"></span>', unsafe_allow_html=True)
         st.write("")
         st.write("")
         with st.container(border=True):
@@ -761,6 +805,97 @@ def page_shared(settings: Settings, db, user) -> None:
                 st.rerun()
 
 
+GALLERY_STEP = 12
+
+
+@st.dialog("Foto", width="large")
+def show_photo(settings: Settings, gallery_id: str, file_id: str, name: str, allow_download: bool) -> None:
+    from core.db import Gallery, get_session_factory as factory
+
+    db = factory(settings.database_url)()
+    try:
+        gallery = db.get(Gallery, gallery_id)
+        try:
+            data = service.gallery_image(db, settings, gallery, file_id, service.VIEW_PX)
+        except AppError as exc:
+            st.error(str(exc))
+            return
+    finally:
+        db.close()
+    st.image(data, width="stretch")
+    if allow_download:
+        st.download_button("Unduh foto", data, file_name=name.rsplit(".", 1)[0] + ".jpg", mime="image/jpeg", icon=":material/download:")
+
+
+def public_gallery(settings: Settings, db, token: str) -> None:
+    found = service.resolve_gallery(db, token)
+    if not found:
+        st.title("🖼️ Galeri")
+        st.error("Galeri ini tidak berlaku. Mungkin sudah kedaluwarsa atau dimatikan pemiliknya.")
+        return
+    gallery, files = found
+    st.title(f"🖼️ {gallery.title}")
+    st.caption(f"{len(files)} foto")
+    limit = st.session_state.get(f"glim_{token}", GALLERY_STEP)
+    shown = files[:limit]
+    with st.spinner("Memuat foto…"):
+        thumbs = service.gallery_thumbs(settings, gallery.id, [f.id for f in shown])
+    ncols = 3
+    for start in range(0, len(shown), ncols):
+        cols = st.columns(ncols)
+        for col, item in zip(cols, shown[start:start + ncols]):
+            with col:
+                data = thumbs.get(item.id)
+                if data is None:
+                    st.caption("Foto tidak bisa dimuat.")
+                    continue
+                st.image(data, width="stretch")
+                if st.button("Perbesar", key=f"zoom_{item.id}", width="stretch"):
+                    show_photo(settings, gallery.id, item.id, item.name, gallery.allow_download)
+    if len(files) > limit:
+        if st.button("Tampilkan lebih banyak"):
+            st.session_state[f"glim_{token}"] = limit + GALLERY_STEP
+            st.rerun()
+
+
+def page_gallery(settings: Settings, db, user) -> None:
+    page_header("Galeri", "Bagikan kumpulan foto tanpa memperlihatkan alamat penyimpanan aslinya.")
+    show_flash()
+    rows = [(f, e) for f, e in service.list_files(db, user.id, recent=True, limit=300) if service.is_image(f)]
+    with st.container(border=True):
+        st.markdown("**Buat galeri baru**")
+        if not rows:
+            st.info("Belum ada foto. Unggah gambar lewat menu Unggah, lalu kembali ke sini.")
+        else:
+            title = st.text_input("Judul galeri", key="g_title")
+            by_id = {f.id: f for f, _ in rows}
+            picked = st.multiselect(
+                f"Pilih foto (maksimal {service.MAX_GALLERY_ITEMS})", list(by_id), format_func=lambda i: by_id[i].name, key="g_files"
+            )
+            c1, c2 = st.columns(2)
+            label = c1.selectbox("Masa berlaku", list(service.EXPIRY_CHOICES), key="g_exp")
+            allow = c2.checkbox("Izinkan pengunjung mengunduh foto", key="g_dl")
+            if st.button("Buat galeri", type="primary", key="g_make"):
+                try:
+                    gallery = service.create_gallery(db, user.id, title, picked, service.EXPIRY_CHOICES[label], allow)
+                    flash("ok", f"Galeri “{gallery.title}” dibuat.")
+                except AppError as exc:
+                    flash("err", str(exc))
+                st.rerun()
+    for gallery in service.list_galleries(db, user.id):
+        with st.container(border=True):
+            cols = st.columns([5, 2, 1])
+            cols[0].markdown(f"**{esc(gallery.title)}** · {len(gallery.items)} foto")
+            cols[0].code(f"{settings.app_url}/?g={gallery.token}", language=None)
+            cols[1].caption(
+                "Tanpa batas waktu" if gallery.expires_at is None else f"Berlaku sampai {fmt_dt(gallery.expires_at)} UTC"
+            )
+            if cols[2].button("Hapus", key=f"gdel_{gallery.id}"):
+                service.delete_gallery(db, user.id, gallery.id)
+                flash("ok", "Galeri dihapus.")
+                st.rerun()
+
+
 def page_trash(settings: Settings, db, user) -> None:
     page_header("Sampah", "Pulihkan atau hapus permanen berkas.")
     show_flash()
@@ -792,7 +927,7 @@ def page_trash(settings: Settings, db, user) -> None:
 
 
 def page_settings(settings: Settings, db, user) -> None:
-    page_header("Pengaturan", "Kelola akun Google Drive yang terhubung.")
+    page_header("Pengaturan", "Kelola akun penyimpanan yang terhubung.")
     show_flash()
     accounts = service.list_accounts(db, user.id)
 
@@ -800,14 +935,25 @@ def page_settings(settings: Settings, db, user) -> None:
         st.session_state["connect_url"] = login_url(settings, "connect", user.id, True)
     st.link_button("Hubungkan akun Google lain", st.session_state["connect_url"], icon=":material/add_link:", type="primary")
     st.caption("Pilih akun lain saat Google bertanya. Untuk menghubungkan ulang akun yang kedaluwarsa, pilih akun yang sama.")
+    if settings.yandex_enabled:
+        if "connect_yandex_url" not in st.session_state:
+            state, _ = oauthstate.make_state(settings.encryption_key, "connect_yandex", user.id)
+            st.session_state["connect_yandex_url"] = yandex.authorization_url(settings, state)
+        st.link_button("Hubungkan Yandex Disk", st.session_state["connect_yandex_url"], icon=":material/add_link:")
+        st.caption("Yandex hanya mengizinkan aplikasi ini memakai folder khususnya di Yandex Disk.")
+    else:
+        st.caption("Yandex Disk belum aktif. Isi YANDEX_CLIENT_ID dan YANDEX_CLIENT_SECRET di Secrets untuk menyalakannya.")
     for acc in accounts:
         with st.container(border=True):
             cols = st.columns([4, 2, 2, 2])
             cols[0].markdown(f'<div class="row-name">{esc(acc.email)}</div>', unsafe_allow_html=True)
-            cols[0].caption("Perlu dihubungkan ulang" if acc.status != "connected" else f"{fmt_bytes(acc.used_bytes)} terpakai")
+            cols[0].caption(
+                ("Yandex Disk · " if acc.provider == "yandex" else "Google Drive · ")
+                + ("Perlu dihubungkan ulang" if acc.status != "connected" else f"{fmt_bytes(acc.used_bytes)} terpakai")
+            )
             if cols[2].button("Sinkronkan berkas", key=f"sync_{acc.id}", disabled=acc.status != "connected"):
                 try:
-                    with st.spinner("Membaca folder PenggabungDrive…"):
+                    with st.spinner("Membaca folder aplikasi…"):
                         out = service.sync_account_files(db, settings, acc)
                     flash("ok", f"{acc.email}: {out['dibuat']} baru, {out['diperbarui']} diperbarui, {out['dihapus']} hilang.")
                 except AppError as exc:
@@ -845,14 +991,18 @@ def main() -> None:
     db = None
     try:
         share_token = st.query_params.get("s")
+        gallery_token = st.query_params.get("g")
         callback = "code" in st.query_params or "error" in st.query_params
-        if not share_token and not callback and not st.session_state.get("user_id"):
+        if not share_token and not gallery_token and not callback and not st.session_state.get("user_id"):
             login_page(settings)  # halaman login tidak menyentuh database, jadi langsung tampil
             return
 
         db = get_session_factory(settings.database_url)()
         if share_token:
             public_page(settings, db, share_token)
+            return
+        if gallery_token:
+            public_gallery(settings, db, gallery_token)
             return
         if callback:
             handle_callback(settings, db)
@@ -874,12 +1024,13 @@ def main() -> None:
             )
             page = st.radio("Menu", MENU, label_visibility="collapsed", key="menu")
         {
-            MENU[0]: page_home,
-            MENU[1]: page_files,
-            MENU[2]: page_upload,
-            MENU[3]: page_shared,
-            MENU[4]: page_trash,
-            MENU[5]: page_settings,
+            "Kuota": page_home,
+            "Berkas": page_files,
+            "Unggah": page_upload,
+            "Dibagikan": page_shared,
+            "Galeri": page_gallery,
+            "Sampah": page_trash,
+            "Pengaturan": page_settings,
         }[page](settings, db, user)
 
         # Ringkasan sidebar dibuat setelah halaman, supaya daftar akun yang sudah dimuat halaman bisa dipakai ulang.
