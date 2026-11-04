@@ -68,6 +68,7 @@ class Account(Base):
     access_token_enc: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     refresh_token_enc: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     token_expiry: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    provider: Mapped[str] = mapped_column(String(16), default="google")  # google | yandex
     status: Mapped[str] = mapped_column(String(32), default="connected")  # connected | reauth
     last_error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     app_folder_id: Mapped[Optional[str]] = mapped_column(String(191), nullable=True)
@@ -125,6 +126,35 @@ class File(Base):
     shares: Mapped[list["Share"]] = relationship(
         back_populates="file", cascade="all, delete-orphan"
     )
+    gallery_items: Mapped[list["GalleryItem"]] = relationship(cascade="all, delete-orphan")
+
+
+class Gallery(Base):
+    """Galeri foto yang dibagikan lewat halaman aplikasi (alamat Drive tidak pernah tampil)."""
+
+    __tablename__ = "galleries"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
+    token: Mapped[str] = mapped_column(String(191), unique=True, index=True)
+    title: Mapped[str] = mapped_column(String(191))
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    allow_download: Mapped[bool] = mapped_column(Boolean, default=False)
+    expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+    items: Mapped[list["GalleryItem"]] = relationship(
+        back_populates="gallery", cascade="all, delete-orphan", order_by="GalleryItem.position"
+    )
+
+
+class GalleryItem(Base):
+    __tablename__ = "gallery_items"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    gallery_id: Mapped[str] = mapped_column(ForeignKey("galleries.id"), index=True)
+    file_id: Mapped[str] = mapped_column(ForeignKey("files.id"), index=True)
+    position: Mapped[int] = mapped_column(Integer, default=0)
+
+    gallery: Mapped[Gallery] = relationship(back_populates="items")
 
 
 class Share(Base):
@@ -201,6 +231,7 @@ _MIGRATIONS = [
     ("folders", "icon", "VARCHAR(16) DEFAULT 'folder'"),
     ("folders", "updated_at", "TIMESTAMP"),
     ("files", "starred", "BOOLEAN DEFAULT FALSE"),
+    ("accounts", "provider", "VARCHAR(16) DEFAULT 'google'"),
 ]
 
 

@@ -5,6 +5,7 @@ sehingga aman dipakai dari Streamlit (yang bisa menghentikan skrip kapan saja).
 """
 from __future__ import annotations
 
+import io
 import secrets
 import threading
 import time
@@ -17,7 +18,7 @@ from google.auth.exceptions import RefreshError
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from . import drive
+from . import drive, yandex
 from .config import Settings
 from .crypto import decrypt, encrypt
 from .db import (
@@ -25,6 +26,8 @@ from .db import (
     Account,
     File,
     Folder,
+    Gallery,
+    GalleryItem,
     RoutingPolicy,
     Share,
     User,
@@ -81,16 +84,18 @@ def resolve_login_user(db: Session, profile: dict) -> User:
 
 
 def upsert_account(
-    db: Session, settings: Settings, user: User, profile: dict, creds
+    db: Session, settings: Settings, user: User, profile: dict, creds, provider: str = "google"
 ) -> Account:
     sub = str(profile["sub"])
     acc = db.scalar(
-        select(Account).where(Account.user_id == user.id, Account.google_sub == sub)
+        select(Account).where(
+            Account.user_id == user.id, Account.google_sub == sub, Account.provider == provider
+        )
     )
     if acc is None:
         if not creds.refresh_token:
-            raise NeedsConsent("Google belum memberi izin offline untuk akun ini.")
-        acc = Account(user_id=user.id, google_sub=sub, email=profile.get("email", ""))
+            raise NeedsConsent("Penyedia belum memberi izin offline untuk akun ini.")
+        acc = Account(user_id=user.id, google_sub=sub, email=profile.get("email", ""), provider=provider)
         db.add(acc)
     elif not creds.refresh_token and not acc.refresh_token_enc:
         raise NeedsConsent("Google belum memberi izin offline untuk akun ini.")
@@ -124,8 +129,43 @@ def _forget_accounts(db: Session) -> None:
     db.info.pop("_accounts", None)
 
 
+def _ops(acc: Account):
+    """Modul penyimpanan untuk akun ini (drive atau yandex); keduanya punya fungsi yang sama."""
+    return yandex if acc.provider == "yandex" else drive
+
+
+def _yandex_client(db: Session, settings: Settings, acc: Account):
+    try:
+        refresh = decrypt(acc.refresh_token_enc, settings.encryption_key)
+        access = decrypt(acc.access_token_enc, settings.encryption_key) if acc.access_token_enc else None
+    except ValueError as exc:
+        raise AppError(str(exc)) from exc
+    if access and acc.token_expiry and acc.token_expiry > utcnow():
+        return yandex.Client(access)
+    try:
+        token = yandex.refresh_token(settings, refresh)
+    except yandex.YandexAuthError as exc:
+        acc.status = "reauth"
+        acc.last_error = "Izin Yandex habis atau dicabut. Hubungkan ulang akun ini."
+        db.commit()
+        raise AppError(acc.last_error) from exc
+    except Exception as exc:
+        raise AppError(f"Gagal menyegarkan token Yandex: {exc}") from exc
+    acc.access_token_enc = encrypt(token["access_token"], settings.encryption_key)
+    if token.get("refresh_token"):
+        acc.refresh_token_enc = encrypt(token["refresh_token"], settings.encryption_key)
+    acc.token_expiry = yandex.expiry_from(token)
+    acc.status, acc.last_error = "connected", None
+    db.commit()
+    return yandex.Client(token["access_token"])
+
+
 def service_for(db: Session, settings: Settings, acc: Account):
-    """Layanan Drive untuk satu akun; token disegarkan dan disimpan bila perlu."""
+    """Klien penyimpanan untuk satu akun; token disegarkan dan disimpan bila perlu."""
+    if not acc.refresh_token_enc:
+        raise AppError("Akun ini belum punya izin offline. Hubungkan ulang.")
+    if acc.provider == "yandex":
+        return _yandex_client(db, settings, acc)
     if not acc.refresh_token_enc:
         raise AppError("Akun ini belum punya izin offline. Hubungkan ulang.")
     try:
@@ -166,7 +206,7 @@ def _flag_scope_problem(db: Session, acc: Account, exc: Exception) -> None:
 def refresh_quota(db: Session, settings: Settings, acc: Account) -> None:
     service = service_for(db, settings, acc)
     try:
-        quota = drive.get_quota(service)
+        quota = _ops(acc).get_quota(service)
     except Exception as exc:
         acc.last_error = _error_text(exc)
         db.commit()
@@ -293,7 +333,8 @@ def remove_account(db: Session, settings: Settings, user_id: str, account_id: st
         raise AppError("Akun tidak ditemukan.")
     if acc.refresh_token_enc:
         try:
-            drive.revoke_token(decrypt(acc.refresh_token_enc, settings.encryption_key))
+            if acc.provider == "google":
+                drive.revoke_token(decrypt(acc.refresh_token_enc, settings.encryption_key))
         except ValueError:
             pass
     policy = db.get(RoutingPolicy, user_id)
@@ -385,7 +426,7 @@ def upload_batch(
                 )
                 continue
             service = service_for(db, settings, acc)
-            folder = drive.ensure_app_folder(service, acc.app_folder_id)
+            folder = _ops(acc).ensure_app_folder(service, acc.app_folder_id)
             if folder != acc.app_folder_id:
                 acc.app_folder_id = folder
                 db.commit()
@@ -394,7 +435,7 @@ def upload_batch(
                 if on_progress
                 else None
             )
-            meta = drive.upload_file(service, folder, name, mime, fileobj, size, callback)
+            meta = _ops(acc).upload_file(service, folder, name, mime, fileobj, size, callback)
             db.add(
                 File(
                     user_id=user_id,
@@ -425,8 +466,8 @@ def sync_account_files(db: Session, settings: Settings, acc: Account) -> dict[st
     """Samakan database dengan isi folder aplikasi di Drive (Drive jadi acuan)."""
     service = service_for(db, settings, acc)
     try:
-        folder = drive.ensure_app_folder(service, acc.app_folder_id)
-        remote = {f["id"]: f for f in drive.list_folder_files(service, folder)}
+        folder = _ops(acc).ensure_app_folder(service, acc.app_folder_id)
+        remote = {f["id"]: f for f in _ops(acc).list_folder_files(service, folder)}
     except Exception as exc:
         _flag_scope_problem(db, acc, exc)
         raise AppError(_error_text(exc)) from exc
@@ -685,7 +726,7 @@ def rename_file(
     acc = db.get(Account, item.account_id)
     service = service_for(db, settings, acc)
     try:
-        drive.rename_file(service, item.drive_file_id, new_name)
+        _ops(acc).rename_file(service, item.drive_file_id, new_name)
     except Exception as exc:
         raise AppError(_error_text(exc)) from exc
     item.name = new_name
@@ -717,7 +758,7 @@ def delete_forever(
         try:
             acc = db.get(Account, item.account_id)
             service = service_for(db, settings, acc)
-            drive.delete_file(service, item.drive_file_id)
+            _ops(acc).delete_file(service, item.drive_file_id)
             acc.used_bytes = max((acc.used_bytes or 0) - (item.size_bytes or 0), 0)
             db.delete(item)
             db.commit()
@@ -734,7 +775,7 @@ def download_file(db: Session, settings: Settings, item: File) -> tuple[bytes, s
         raise AppError("Akun penyimpan file ini sudah dilepas.")
     service = service_for(db, settings, acc)
     try:
-        return drive.download_bytes(
+        return _ops(acc).download_bytes(
             service, item.drive_file_id, settings.max_download_mb * 1024 * 1024
         )
     except drive.DriveError as exc:
@@ -792,3 +833,152 @@ def resolve_public_share(db: Session, token: str) -> Optional[tuple[Share, File]
     if item is None or item.status != "active":
         return None
     return share, item
+
+
+# ---------------------------------------------------------------- Galeri foto
+
+MAX_GALLERY_ITEMS = 100
+MAX_IMAGE_BYTES = 25 * 1024 * 1024
+THUMB_PX, VIEW_PX = 480, 1600
+_img_lock = threading.Lock()
+_img_cache: dict[tuple[str, int], bytes] = {}
+_img_cache_bytes = 0
+IMG_CACHE_LIMIT = 80 * 1024 * 1024
+
+
+def is_image(item: File) -> bool:
+    return (item.mime_type or "").startswith("image/")
+
+
+def create_gallery(
+    db: Session,
+    user_id: str,
+    title: str,
+    file_ids: Sequence[str],
+    days: Optional[int],
+    allow_download: bool = False,
+) -> Gallery:
+    title = (title or "").strip()
+    if not title:
+        raise AppError("Judul galeri tidak boleh kosong.")
+    files = [f for f in _owned_files(db, user_id, list(dict.fromkeys(file_ids))) if f.status == "active" and is_image(f)]
+    if not files:
+        raise AppError("Pilih minimal satu berkas gambar.")
+    if len(files) > MAX_GALLERY_ITEMS:
+        raise AppError(f"Satu galeri maksimal {MAX_GALLERY_ITEMS} foto.")
+    order = {fid: i for i, fid in enumerate(file_ids)}
+    files.sort(key=lambda f: order.get(f.id, 0))
+    gallery = Gallery(
+        user_id=user_id,
+        token=secrets.token_urlsafe(18),
+        title=title[:191],
+        allow_download=allow_download,
+        expires_at=None if days is None else utcnow() + timedelta(days=days),
+    )
+    gallery.items = [GalleryItem(file_id=f.id, position=i) for i, f in enumerate(files)]
+    db.add(gallery)
+    db.commit()
+    return gallery
+
+
+def list_galleries(db: Session, user_id: str) -> list[Gallery]:
+    return list(
+        db.scalars(
+            select(Gallery).where(Gallery.user_id == user_id, Gallery.enabled.is_(True)).order_by(Gallery.created_at.desc())
+        )
+    )
+
+
+def delete_gallery(db: Session, user_id: str, gallery_id: str) -> None:
+    gallery = db.get(Gallery, gallery_id)
+    if gallery is None or gallery.user_id != user_id:
+        raise AppError("Galeri tidak ditemukan.")
+    db.delete(gallery)
+    db.commit()
+
+
+def resolve_gallery(db: Session, token: str) -> Optional[tuple[Gallery, list[File]]]:
+    """Galeri valid bila aktif dan belum kedaluwarsa. Hanya foto yang masih aktif yang ikut."""
+    gallery = db.scalar(select(Gallery).where(Gallery.token == token))
+    if gallery is None or not gallery.enabled:
+        return None
+    if gallery.expires_at is not None and gallery.expires_at < utcnow():
+        return None
+    files = []
+    for entry in gallery.items:
+        item = db.get(File, entry.file_id)
+        if item is not None and item.status == "active":
+            files.append(item)
+    return (gallery, files) if files else None
+
+
+def _resize(data: bytes, max_px: int) -> bytes:
+    from PIL import Image, ImageOps
+
+    with Image.open(io.BytesIO(data)) as img:
+        img = ImageOps.exif_transpose(img)
+        img.thumbnail((max_px, max_px))
+        if img.mode not in ("RGB", "L"):
+            img = img.convert("RGB")
+        out = io.BytesIO()
+        img.save(out, "JPEG", quality=82, optimize=True)
+        return out.getvalue()
+
+
+def _cache_put(key: tuple[str, int], data: bytes) -> None:
+    global _img_cache_bytes
+    with _img_lock:
+        if key in _img_cache:
+            return
+        while _img_cache and _img_cache_bytes + len(data) > IMG_CACHE_LIMIT:
+            old = next(iter(_img_cache))
+            _img_cache_bytes -= len(_img_cache.pop(old))
+        _img_cache[key] = data
+        _img_cache_bytes += len(data)
+
+
+def gallery_image(db: Session, settings: Settings, gallery: Gallery, file_id: str, max_px: int) -> bytes:
+    """JPEG berukuran max_px untuk satu foto di galeri. Foto di luar galeri ditolak."""
+    if file_id not in {e.file_id for e in gallery.items}:
+        raise AppError("Foto tidak ada di galeri ini.")
+    key = (file_id, max_px)
+    with _img_lock:
+        hit = _img_cache.get(key)
+    if hit is not None:
+        return hit
+    item = db.get(File, file_id)
+    if item is None or item.status != "active":
+        raise AppError("Foto tidak tersedia.")
+    acc = db.get(Account, item.account_id)
+    if acc is None:
+        raise AppError("Akun penyimpan foto ini sudah dilepas.")
+    try:
+        data, _, _ = _ops(acc).download_bytes(service_for(db, settings, acc), item.drive_file_id, MAX_IMAGE_BYTES)
+        out = _resize(data, max_px)
+    except AppError:
+        raise
+    except Exception as exc:
+        raise AppError(_error_text(exc)) from exc
+    _cache_put(key, out)
+    return out
+
+
+def gallery_thumbs(settings: Settings, gallery_id: str, file_ids: Sequence[str], max_workers: int = 6) -> dict[str, Optional[bytes]]:
+    """Ambil banyak thumbnail sekaligus; tiap thread memakai sesi database sendiri. Gagal -> None."""
+    ids = list(file_ids)
+    factory = get_session_factory(settings.database_url)
+
+    def work(fid: str) -> tuple[str, Optional[bytes]]:
+        db = factory()
+        try:
+            gallery = db.get(Gallery, gallery_id)
+            return fid, gallery_image(db, settings, gallery, fid, THUMB_PX)
+        except Exception:
+            return fid, None
+        finally:
+            db.close()
+
+    if not ids:
+        return {}
+    with ThreadPoolExecutor(max_workers=min(max_workers, len(ids))) as pool:
+        return dict(pool.map(work, ids))

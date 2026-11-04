@@ -19,7 +19,7 @@ TTL_SECONDS = 30 * 60
 
 @dataclass(frozen=True)
 class PendingAuth:
-    purpose: str  # "login" | "connect"
+    purpose: str  # "login" | "connect" | "connect_yandex"
     user_id: Optional[str]
     code_verifier: str
 
@@ -63,6 +63,6 @@ def read_state(
         age = (now if now is not None else time.time()) - int(issued)
     except (ValueError, UnicodeDecodeError):
         return None
-    if purpose not in ("login", "connect") or age < -60 or age > ttl:
+    if purpose not in ("login", "connect", "connect_yandex") or age < -60 or age > ttl:
         return None
     return PendingAuth(purpose, user_id or None, _verifier(key, payload))

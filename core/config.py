@@ -28,6 +28,12 @@ class Settings:
     allowed_emails: tuple[str, ...]
     max_download_mb: int
     debug: bool = False
+    yandex_client_id: str = ""
+    yandex_client_secret: str = ""
+
+    @property
+    def yandex_enabled(self) -> bool:
+        return bool(self.yandex_client_id and self.yandex_client_secret)
 
     def missing(self) -> list[str]:
         """Nama pengaturan wajib yang belum diisi."""
@@ -59,5 +65,7 @@ def load_settings() -> Settings:
         database_url=_get("DATABASE_URL", "sqlite:///data/penggabung.db"),
         allowed_emails=emails,
         max_download_mb=max_mb,
+        yandex_client_id=_get("YANDEX_CLIENT_ID"),
+        yandex_client_secret=_get("YANDEX_CLIENT_SECRET"),
         debug=_get("DEBUG").strip().lower() in ("1", "true", "ya", "yes"),
     )
