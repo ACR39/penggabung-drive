@@ -42,7 +42,8 @@ Buka <http://localhost:8501>, klik **Masuk dengan Google**, lalu setujui semua i
 2. Di <https://share.streamlit.io> buat app dari repositori itu, file utama `app.py`.
 3. Isi **Settings → Secrets** dengan isi `secrets.toml.example`, dan set `APP_URL` ke alamat app Anda.
 4. Tambahkan alamat itu ke **Authorized redirect URIs** di Google Cloud.
-5. **Wajib pakai database Postgres.** Disk Streamlit Cloud tidak permanen, jadi SQLite akan hilang saat app restart. Gunakan Postgres gratis (Supabase atau Neon) dan isi `DATABASE_URL=postgresql://...`.
+5. **Wajib pakai database Postgres.** Lihat bagian *Memakai Supabase* di bawah.
+   Alasannya: Disk Streamlit Cloud tidak permanen, jadi SQLite akan hilang saat app restart. Gunakan Postgres gratis (Supabase atau Neon) dan isi `DATABASE_URL=postgresql://...`.
 
 ## Cara pakai singkat
 
@@ -51,7 +52,19 @@ Buka <http://localhost:8501>, klik **Masuk dengan Google**, lalu setujui semua i
 3. Di menu **Kuota**, atur **Aturan unggah**: pilih mode, lalu ubah urutan akun dengan tombol Naik/Turun.
 4. **Unggah** berkas, **Berkas** untuk melihat, mencari, memindah, dan membagikan.
 
-## Kalau terasa lambat
+## Memakai Supabase (Postgres gratis)
+
+1. Buat proyek di supabase.com, simpan *database password*, dan pilih **region** yang dekat dengan server aplikasi.
+2. Klik **Connect** di dasbor proyek, ambil **Session pooler** (host `...pooler.supabase.com`, port 5432). Jangan pakai koneksi langsung `db.xxx.supabase.co`: itu hanya IPv6 dan sering tidak terjangkau dari hosting.
+3. Ganti `[YOUR-PASSWORD]` dengan password asli. Karakter khusus harus di-URL-encode (`@` jadi `%40`, `#` jadi `%23`, `/` jadi `%2F`, `:` jadi `%3A`), atau pakai password huruf dan angka saja.
+4. Isi Secrets: `DATABASE_URL = "postgresql://postgres.PROJECTREF:PASSWORD@aws-0-REGION.pooler.supabase.com:5432/postgres"`.
+5. Restart aplikasi. Tabel dibuat otomatis. Proyek gratis bisa dijeda bila lama tidak dipakai.
+
+## Kalau terasa lambat atau tidak bisa masuk
+
+- Halaman **Masuk dengan Google** tidak memakai database, jadi harus langsung tampil. Bila setelah masuk muncul *"Tidak bisa terhubung ke database"*, periksa `DATABASE_URL` (poin di atas).
+- Koneksi database diberi batas waktu 10 detik, jadi alamat yang salah akan gagal dengan pesan jelas, bukan menggantung.
+- Dengan `DEBUG = "1"`, halaman masuk menampilkan **ping ke database** (ms). Di bawah 50 ms bagus, di atas 150 ms sebaiknya pindahkan region database.
 
 - Isi `DEBUG = "1"` di Secrets. Di bawah sidebar akan tampil waktu total, jumlah kueri, dan waktu yang habis di database untuk setiap klik. Bila "ms di database" besar, penyebabnya jarak ke database.
 - Pilih **region database yang dekat dengan server Streamlit** (lihat lokasi proyek di Supabase/Neon). Setiap klik memakai 1 sampai 3 kueri, jadi tiap 100 ms jarak menambah sekitar 0,1 sampai 0,3 detik.

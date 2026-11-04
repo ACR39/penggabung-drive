@@ -74,10 +74,11 @@ def _build_flow(settings: Settings) -> Flow:
 
 
 def authorization_url(
-    settings: Settings, state: str, force_consent: bool
-) -> tuple[str, Optional[str]]:
+    settings: Settings, state: str, force_consent: bool, code_verifier: str
+) -> str:
     """Buat tautan masuk Google. force_consent=True memunculkan pilihan akun + izin."""
     flow = _build_flow(settings)
+    flow.code_verifier = code_verifier
     options = {
         "access_type": "offline",
         "include_granted_scopes": "false",
@@ -86,7 +87,7 @@ def authorization_url(
     if force_consent:
         options["prompt"] = "select_account consent"
     url, _ = flow.authorization_url(**options)
-    return url, getattr(flow, "code_verifier", None)
+    return url
 
 
 def exchange_code(

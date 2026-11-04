@@ -13,9 +13,11 @@ from dataclasses import dataclass
 import pandas as pd
 import streamlit as st
 
-from core import drive, service
+from core import drive, oauthstate, service
 from core.config import Settings, load_settings
-from core.db import STATS, get_session_factory
+from sqlalchemy.exc import InterfaceError, OperationalError
+
+from core.db import STATS, get_session_factory, ping_db
 from core.service import AppError, NeedsConsent
 from core.utils import file_icon, fmt_bytes, fmt_dt
 
@@ -144,11 +146,9 @@ def show_flash() -> None:
         {"ok": st.success, "err": st.error, "info": st.info}.get(kind, st.info)(text)
 
 
-def login_url(settings: Settings, db, purpose: str, user_id: str | None, consent: bool) -> str:
-    state = secrets.token_urlsafe(24)
-    url, verifier = drive.authorization_url(settings, state, force_consent=consent)
-    service.save_oauth_state(db, state, purpose, user_id, verifier)
-    return url
+def login_url(settings: Settings, purpose: str, user_id: str | None, consent: bool) -> str:
+    state, verifier = oauthstate.make_state(settings.encryption_key, purpose, user_id)
+    return drive.authorization_url(settings, state, consent, verifier)
 
 
 @dataclass
@@ -219,7 +219,7 @@ def handle_callback(settings: Settings, db) -> None:
     if err:
         flash("err", f"Google membatalkan proses masuk ({err}).")
         return
-    pending = service.pop_oauth_state(db, state or "")
+    pending = oauthstate.read_state(settings.encryption_key, state or "")
     if not pending:
         flash("err", "Sesi masuk sudah habis atau tidak dikenal. Silakan coba lagi.")
         return
@@ -259,7 +259,30 @@ def handle_callback(settings: Settings, db) -> None:
     flash("ok", f"Akun {profile.get('email')} terhubung.")
 
 
-def login_page(settings: Settings, db) -> None:
+def show_db_error(settings: Settings, exc: Exception) -> None:
+    st.error("Tidak bisa terhubung ke database.")
+    st.markdown(
+        "- Periksa `DATABASE_URL` di Secrets (password benar dan sudah di-URL-encode).\n"
+        "- Di Supabase pakai alamat **Session pooler** (host `...pooler.supabase.com`), bukan `db.xxx.supabase.co` "
+        "yang hanya IPv6.\n"
+        "- Pastikan proyek Supabase tidak sedang dijeda (paused).\n"
+        "- Isi `DEBUG = \"1\"` di Secrets untuk melihat detail dan ping database."
+    )
+    if settings.debug:
+        st.code(str(getattr(exc, "orig", exc))[:600], language=None)
+
+
+def db_ping_caption(settings: Settings) -> None:
+    try:
+        connect_ms, ping_ms = ping_db(settings.database_url)
+    except Exception as exc:
+        st.caption(f"🔌 Database tidak terjangkau: {str(getattr(exc, 'orig', exc))[:300]}")
+        return
+    verdict = "bagus" if ping_ms < 50 else "cukup" if ping_ms < 150 else "jauh, pertimbangkan pindah region"
+    st.caption(f"🔌 Database: sambung {connect_ms:.0f} ms · ping {ping_ms:.0f} ms ({verdict})")
+
+
+def login_page(settings: Settings) -> None:
     left, mid, right = st.columns([1, 1.6, 1])
     with mid:
         st.write("")
@@ -274,7 +297,7 @@ def login_page(settings: Settings, db) -> None:
             show_flash()
             consent = st.session_state.get("need_consent", False)
             if "login_url" not in st.session_state or st.session_state.get("login_consent") != consent:
-                st.session_state["login_url"] = login_url(settings, db, "login", None, consent)
+                st.session_state["login_url"] = login_url(settings, "login", None, consent)
                 st.session_state["login_consent"] = consent
             st.link_button(
                 "Masuk dengan Google", st.session_state["login_url"], type="primary", width="stretch"
@@ -283,6 +306,8 @@ def login_page(settings: Settings, db) -> None:
                 "Masuklah dengan akun Google utama. Akun lain ditambahkan setelah masuk. "
                 "Halaman Google terbuka di tab baru."
             )
+            if settings.debug:
+                db_ping_caption(settings)
 
 
 # ------------------------------------------------------------------ halaman utama
@@ -613,7 +638,7 @@ def page_settings(settings: Settings, db, user) -> None:
     accounts = service.list_accounts(db, user.id)
 
     if "connect_url" not in st.session_state:
-        st.session_state["connect_url"] = login_url(settings, db, "connect", user.id, True)
+        st.session_state["connect_url"] = login_url(settings, "connect", user.id, True)
     st.link_button("Hubungkan akun Google lain", st.session_state["connect_url"], icon=":material/add_link:", type="primary")
     st.caption("Pilih akun lain saat Google bertanya. Untuk menghubungkan ulang akun yang kedaluwarsa, pilih akun yang sama.")
     for acc in accounts:
@@ -658,19 +683,25 @@ def main() -> None:
 
     started = time.perf_counter()
     STATS.reset()
-    db = get_session_factory(settings.database_url)()
+    db = None
     try:
         share_token = st.query_params.get("s")
+        callback = "code" in st.query_params or "error" in st.query_params
+        if not share_token and not callback and not st.session_state.get("user_id"):
+            login_page(settings)  # halaman login tidak menyentuh database, jadi langsung tampil
+            return
+
+        db = get_session_factory(settings.database_url)()
         if share_token:
             public_page(settings, db, share_token)
             return
-        if "code" in st.query_params or "error" in st.query_params:
+        if callback:
             handle_callback(settings, db)
             st.rerun()
 
         user = current_user(db)
         if user is None:
-            login_page(settings, db)
+            login_page(settings)
             return
 
         initial = esc((user.name or user.email)[:1].upper())
@@ -714,8 +745,11 @@ def main() -> None:
                 logout()
         if accounts_all is not None:  # kuota basi disegarkan di latar belakang, halaman tidak menunggu
             service.refresh_in_background(settings, service.stale_ids(accounts_all))
+    except (OperationalError, InterfaceError) as exc:
+        show_db_error(settings, exc)
     finally:
-        db.close()
+        if db is not None:
+            db.close()
         if settings.debug:
             queries, seconds = STATS.snapshot()
             elapsed = time.perf_counter() - started

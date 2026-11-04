@@ -221,21 +221,6 @@ def test_share_lifecycle(env):
     assert service.resolve_public_share(db, share.token) is None  # dimatikan
 
 
-def test_oauth_state_is_single_use_and_expires(env):
-    db, *_ = env
-    service.save_oauth_state(db, "st1", "login", None, "ver")
-    first = service.pop_oauth_state(db, "st1")
-    assert first and first.purpose == "login" and first.code_verifier == "ver"
-    assert service.pop_oauth_state(db, "st1") is None
-    service.save_oauth_state(db, "st2", "connect", "u1", None)
-    from core.db import OauthState
-
-    row = db.get(OauthState, "st2")
-    row.created_at = utcnow() - timedelta(hours=2)
-    db.commit()
-    assert service.pop_oauth_state(db, "st2") is None
-
-
 def test_sync_account_files(env, monkeypatch):
     db, settings, user, (a0, _), _ = env
     monkeypatch.setattr(
@@ -355,3 +340,91 @@ def test_stale_ids_and_accounts_list_is_cached_per_session(filedb):
     service.list_accounts(db, user.id)
     service.list_accounts(db, user.id, False)
     assert STATS.snapshot()[0] == 0  # pemanggilan berikutnya tanpa kueri
+
+
+# ------------------------------------------------------------ status OAuth tanpa database
+
+
+def test_signed_state_roundtrip_and_pkce_verifier():
+    from core import oauthstate as o
+
+    key = "k" * 40
+    state, verifier = o.make_state(key, "connect", "user-1", now=1000)
+    got = o.read_state(key, state, now=1100)
+    assert got and got.purpose == "connect" and got.user_id == "user-1"
+    assert got.code_verifier == verifier and 43 <= len(verifier) <= 128
+    assert set(verifier) <= set("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")
+    login, _ = o.make_state(key, "login", None, now=1000)
+    assert o.read_state(key, login, now=1000).user_id is None
+    assert o.make_state(key, "login", None)[0] != o.make_state(key, "login", None)[0]  # acak
+
+
+def test_signed_state_rejects_tampering_expiry_and_wrong_key():
+    from core import oauthstate as o
+
+    key = "k" * 40
+    state, _ = o.make_state(key, "login", None, now=1000)
+    assert o.read_state(key, state, now=1000 + o.TTL_SECONDS + 1) is None  # kedaluwarsa
+    assert o.read_state("x" * 40, state, now=1000) is None  # kunci lain
+    payload, sig = state.split(".")
+    assert o.read_state(key, payload + "." + sig[:-2] + "AA", now=1000) is None  # tanda tangan diubah
+    forged, _ = o.make_state(key, "login", None, now=1000)
+    other, _ = o.make_state(key, "connect", "korban", now=1000)
+    assert o.read_state(key, forged.split(".")[0] + "." + other.split(".")[1], now=1000) is None
+    for junk in ["", "abc", "a.b", "....", "palsu"]:
+        assert o.read_state(key, junk) is None
+
+
+def test_authorization_url_uses_given_verifier_for_challenge():
+    import base64
+    import hashlib
+    from urllib.parse import parse_qs, urlparse
+
+    from core import drive
+    from core import oauthstate as o
+
+    settings = Settings("id", "secret", "https://app.example.com", "k" * 40, "sqlite://", (), 1)
+    state, verifier = o.make_state(settings.encryption_key, "login", None)
+    url = drive.authorization_url(settings, state, True, verifier)
+    q = parse_qs(urlparse(url).query)
+    challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).decode().rstrip("=")
+    assert q["code_challenge"] == [challenge] and q["code_challenge_method"] == ["S256"]
+    assert q["state"] == [state] and q["prompt"] == ["select_account consent"]
+    assert q["redirect_uri"] == ["https://app.example.com"]
+
+
+def test_login_page_and_errors_work_even_when_database_is_unreachable(tmp_path):
+    """Halaman login tidak boleh menunggu database; galat database tampil sebagai pesan, bukan crash."""
+    import os
+    import subprocess
+    import sys
+    import textwrap
+
+    script = tmp_path / "check.py"
+    script.write_text(textwrap.dedent(f"""
+        import os, sys
+        os.environ.update(GOOGLE_CLIENT_ID="id", GOOGLE_CLIENT_SECRET="s", APP_URL="http://localhost:8501",
+                          TOKEN_ENCRYPTION_KEY="k"*40, DATABASE_URL="postgresql://u:p@127.0.0.1:1/x")
+        sys.path.insert(0, {os.getcwd()!r})
+        from streamlit.testing.v1 import AppTest
+        at = AppTest.from_file({os.path.join(os.getcwd(), "app.py")!r}, default_timeout=30).run()
+        assert not at.exception, at.exception
+        assert any("Masuk dengan Google" in b.label for b in at.get("link_button"))
+        at = AppTest.from_file({os.path.join(os.getcwd(), "app.py")!r}, default_timeout=30)
+        at.session_state["user_id"] = "abc"
+        at.run()
+        assert not at.exception, at.exception
+        assert any("Tidak bisa terhubung ke database" in e.value for e in at.error), [e.value for e in at.error]
+        print("OK")
+    """))
+    out = subprocess.run([sys.executable, str(script)], capture_output=True, text=True, timeout=120)
+    assert out.returncode == 0 and "OK" in out.stdout, out.stdout + out.stderr[-1500:]
+
+
+def test_postgres_urls_are_pinned_to_psycopg2():
+    from core.db import _normalize_url
+
+    assert _normalize_url("postgresql://u:p@h:5432/db") == "postgresql+psycopg2://u:p@h:5432/db"
+    assert _normalize_url("postgres://u:p@h/db") == "postgresql+psycopg2://u:p@h/db"
+    assert _normalize_url("postgresql+psycopg2://u:p@h/db").startswith("postgresql+psycopg2://")
+    assert _normalize_url("sqlite:///x.db") == "sqlite:///x.db"

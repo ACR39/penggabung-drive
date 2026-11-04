@@ -21,7 +21,9 @@ from sqlalchemy import (
     Text,
     create_engine,
 )
+from sqlalchemy import inspect, text
 from sqlalchemy.engine import make_url
+from sqlalchemy.pool import NullPool
 from sqlalchemy.orm import (
     DeclarativeBase,
     Mapped,
@@ -142,17 +144,6 @@ class RoutingPolicy(Base):
     cursor: Mapped[int] = mapped_column(Integer, default=0)
 
 
-class OauthState(Base):
-    """Status OAuth sekali pakai; callback Google bisa mendarat di sesi Streamlit baru."""
-
-    __tablename__ = "oauth_states"
-    state: Mapped[str] = mapped_column(String(191), primary_key=True)
-    purpose: Mapped[str] = mapped_column(String(16))  # login | connect
-    user_id: Mapped[Optional[str]] = mapped_column(String(36), nullable=True)
-    code_verifier: Mapped[Optional[str]] = mapped_column(String(191), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
-
-
 class _Stats:
     """Penghitung kueri per thread (dipakai mode DEBUG untuk mencari bagian yang lambat)."""
 
@@ -188,9 +179,43 @@ _session_factories: dict[str, sessionmaker] = {}
 
 
 def _normalize_url(url: str) -> str:
-    if url.startswith("postgres://"):
-        return "postgresql://" + url[len("postgres://") :]
+    """Pastikan alamat Postgres memakai driver psycopg2.
+
+    SQLAlchemy 2.1 ke atas memakai psycopg (v3) bila hanya tertulis "postgresql://",
+    sedangkan requirements.txt memasang psycopg2-binary.
+    """
+    for prefix in ("postgres://", "postgresql://"):
+        if url.startswith(prefix):
+            return "postgresql+psycopg2://" + url[len(prefix):]
     return url
+
+
+def _ensure_schema(engine) -> None:
+    """Satu kueri untuk memeriksa tabel; create_all hanya dijalankan bila ada yang belum ada."""
+    existing = set(inspect(engine).get_table_names())
+    if not set(Base.metadata.tables) <= existing:
+        Base.metadata.create_all(engine)
+
+
+def ping_db(url: str, times: int = 3) -> tuple[float, float]:
+    """Ukur (ms untuk menyambung, ms ping tercepat) dari server aplikasi ke database."""
+    url = _normalize_url(url)
+    kwargs: dict = {"poolclass": NullPool}
+    if make_url(url).get_backend_name() != "sqlite":
+        kwargs["connect_args"] = {"connect_timeout": 10}
+    engine = create_engine(url, **kwargs)
+    try:
+        t0 = time.perf_counter()
+        with engine.connect() as conn:
+            connect_ms = (time.perf_counter() - t0) * 1000
+            best = float("inf")
+            for _ in range(times):
+                t1 = time.perf_counter()
+                conn.execute(text("SELECT 1"))
+                best = min(best, (time.perf_counter() - t1) * 1000)
+        return connect_ms, best
+    finally:
+        engine.dispose()
 
 
 def get_session_factory(url: str) -> sessionmaker:
@@ -205,9 +230,10 @@ def get_session_factory(url: str) -> sessionmaker:
             kwargs["connect_args"] = {"check_same_thread": False}
         else:
             kwargs["pool_pre_ping"] = True
+            kwargs["connect_args"] = {"connect_timeout": 10}  # gagal cepat, jangan menggantung
         engine = create_engine(url, **kwargs)
         _attach_timers(engine)
-        Base.metadata.create_all(engine)
+        _ensure_schema(engine)
         _session_factories[url] = sessionmaker(engine, expire_on_commit=False)
     return _session_factories[url]
 

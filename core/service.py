@@ -25,7 +25,6 @@ from .db import (
     Account,
     File,
     Folder,
-    OauthState,
     RoutingPolicy,
     Share,
     User,
@@ -34,7 +33,6 @@ from .db import (
 from .routing import MODES, Candidate, pick_account
 
 STALE_AFTER = timedelta(minutes=5)
-OAUTH_STATE_TTL = timedelta(minutes=30)
 EXPIRY_CHOICES: dict[str, Optional[int]] = {
     "Tanpa batas waktu": None,
     "1 hari": 1,
@@ -53,40 +51,6 @@ class NeedsConsent(AppError):
 
 def _error_text(exc: Exception) -> str:
     return str(exc) if isinstance(exc, AppError) else drive.friendly_error(exc)
-
-
-# ---------------------------------------------------------------- OAuth state
-
-
-@dataclass
-class PendingAuth:
-    purpose: str
-    user_id: Optional[str]
-    code_verifier: Optional[str]
-
-
-def save_oauth_state(
-    db: Session, state: str, purpose: str, user_id: Optional[str], verifier: Optional[str]
-) -> None:
-    for old in db.scalars(
-        select(OauthState).where(OauthState.created_at < utcnow() - OAUTH_STATE_TTL)
-    ):
-        db.delete(old)
-    db.add(
-        OauthState(state=state, purpose=purpose, user_id=user_id, code_verifier=verifier)
-    )
-    db.commit()
-
-
-def pop_oauth_state(db: Session, state: str) -> Optional[PendingAuth]:
-    row = db.get(OauthState, state)
-    if row is None:
-        return None
-    pending = PendingAuth(row.purpose, row.user_id, row.code_verifier)
-    fresh = utcnow() - row.created_at <= OAUTH_STATE_TTL
-    db.delete(row)
-    db.commit()
-    return pending if fresh else None
 
 
 # ---------------------------------------------------------------- Pengguna dan akun
