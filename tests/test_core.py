@@ -565,3 +565,132 @@ def test_ui_assets():
     assert ui.color_hex("tidak-ada") == ui.color_hex("blue")
     assert "<script" not in ui.folder_icon_html("<script>", "x")
     assert ui.esc("<b>&") == "&lt;b&gt;&amp;"
+
+
+# ------------------------------------------------------------ Yandex + galeri
+
+
+class FakeResp:
+    def __init__(self, status=200, data=None, content=b""):
+        self.status_code, self._data, self._content = status, data or {}, content
+
+    def json(self):
+        return self._data
+
+    def iter_content(self, n):
+        yield self._content
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
+def test_yandex_quota_upload_rename_delete(monkeypatch):
+    from core import yandex
+
+    files = {}
+    calls = []
+
+    def fake_request(method, url, headers=None, params=None, timeout=None, **kw):
+        path = url.replace(yandex.API, "")
+        calls.append((method, path, params))
+        if path == "" and method == "GET":
+            return FakeResp(200, {"total_space": 1000, "used_space": 250, "trash_size": 5})
+        if path == "/resources" and method == "GET":
+            return FakeResp(200 if params["path"] in files else 404, {"name": "x"})
+        if path == "/resources/upload":
+            return FakeResp(200, {"href": "https://up.example/put"})
+        if path == "/resources/move":
+            files[params["path"]] = files.pop(params["from"])
+            return FakeResp(201)
+        if path == "/resources" and method == "DELETE":
+            files.pop(params["path"], None)
+            return FakeResp(204)
+        return FakeResp(404)
+
+    def fake_put(url, data=None, headers=None, timeout=None):
+        files["app:/a.jpg"] = data
+        return FakeResp(201)
+
+    monkeypatch.setattr(yandex.requests, "request", fake_request)
+    monkeypatch.setattr(yandex.requests, "put", fake_put)
+    c = yandex.Client("tok")
+    q = yandex.get_quota(c)
+    assert (q.total, q.used, q.trash) == (1000, 250, 5)
+    assert yandex.ensure_app_folder(c) == "app:/"
+    meta = yandex.upload_file(c, "app:/", "a.jpg", "image/jpeg", io.BytesIO(b"abc"), 3)
+    assert meta["id"] == "app:/a.jpg" and meta["name"] == "a.jpg"
+    meta2 = yandex.upload_file(c, "app:/", "a.jpg", "image/jpeg", io.BytesIO(b"abc"), 3)
+    assert meta2["name"] == "a (2).jpg"  # nama kembar diberi nomor
+    yandex.rename_file(c, "app:/a.jpg", "b.jpg")
+    assert "app:/b.jpg" in files
+    yandex.delete_file(c, "app:/b.jpg")
+    assert "app:/b.jpg" not in files
+
+
+def test_yandex_authorization_url_and_state():
+    from core import oauthstate, yandex
+
+    s = Settings("id", "secret", "https://app.example", "k" * 40, "sqlite://", (), 1, False, "yid", "ysecret")
+    assert s.yandex_enabled
+    state, _ = oauthstate.make_state(s.encryption_key, "connect_yandex", "u1")
+    url = yandex.authorization_url(s, state)
+    assert "client_id=yid" in url and "redirect_uri=https%3A%2F%2Fapp.example" in url
+    assert oauthstate.read_state(s.encryption_key, state).purpose == "connect_yandex"
+
+
+def test_upsert_account_keeps_providers_apart(env):
+    class C:
+        token, refresh_token, expiry = "t", "r", None
+
+    db, settings, user = env[0], env[1], env[2]
+    a = service.upsert_account(db, settings, user, {"sub": "same", "email": "g@x.com"}, C(), "google")
+    b = service.upsert_account(db, settings, user, {"sub": "same", "email": "y@x.com"}, C(), "yandex")
+    assert a.id != b.id and b.provider == "yandex"
+
+
+def _png(color):
+    from PIL import Image
+
+    out = io.BytesIO()
+    Image.new("RGB", (900, 600), color).save(out, "PNG")
+    return out.getvalue()
+
+
+def test_gallery_create_resolve_and_thumbnail(env, monkeypatch):
+    db, settings, user, accounts = env[0], env[1], env[2], env[3]
+    acc = accounts[0]
+    imgs = []
+    for n in range(2):
+        f = File(user_id=user.id, account_id=acc.id, drive_file_id=f"d{n}", name=f"p{n}.png", mime_type="image/png", size_bytes=10)
+        db.add(f)
+        imgs.append(f)
+    doc = File(user_id=user.id, account_id=acc.id, drive_file_id="dx", name="a.pdf", mime_type="application/pdf", size_bytes=10)
+    db.add(doc)
+    db.commit()
+    with pytest.raises(service.AppError):
+        service.create_gallery(db, user.id, "x", [doc.id], None)  # bukan gambar
+    with pytest.raises(service.AppError):
+        service.create_gallery(db, user.id, " ", [imgs[0].id], None)
+    g = service.create_gallery(db, user.id, "Liburan", [imgs[1].id, imgs[0].id, doc.id], 7)
+    got, files = service.resolve_gallery(db, g.token)
+    assert [f.id for f in files] == [imgs[1].id, imgs[0].id]
+    monkeypatch.setattr(service, "service_for", lambda *a: object())
+    monkeypatch.setattr(service.drive, "download_bytes", lambda *a: (_png("red"), "p.png", "image/png"))
+    data = service.gallery_image(db, settings, g, imgs[0].id, service.THUMB_PX)
+    from PIL import Image
+
+    assert max(Image.open(io.BytesIO(data)).size) <= service.THUMB_PX
+    with pytest.raises(service.AppError):
+        service.gallery_image(db, settings, g, doc.id, 100)  # di luar galeri ditolak
+    imgs[0].status = "trashed"
+    imgs[1].status = "trashed"
+    db.commit()
+    assert service.resolve_gallery(db, g.token) is None
+    g.enabled = True
+    g.expires_at = utcnow() - timedelta(days=1)
+    imgs[0].status = "active"
+    db.commit()
+    assert service.resolve_gallery(db, g.token) is None  # kedaluwarsa

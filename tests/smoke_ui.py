@@ -5,7 +5,7 @@ from datetime import timedelta
 tmp = tempfile.mkdtemp()
 os.environ.update(
     GOOGLE_CLIENT_ID="id", GOOGLE_CLIENT_SECRET="secret", APP_URL="http://localhost:8501",
-    TOKEN_ENCRYPTION_KEY="k" * 40, DATABASE_URL=f"sqlite:///{tmp}/t.db",
+    TOKEN_ENCRYPTION_KEY="k" * 40, YANDEX_CLIENT_ID="yid", YANDEX_CLIENT_SECRET="ysec", DATABASE_URL=f"sqlite:///{tmp}/t.db",
 )
 sys.path.insert(0, os.getcwd())
 from streamlit.testing.v1 import AppTest
@@ -57,7 +57,7 @@ ok &= check("publik salah", at); assert any("tidak berlaku" in e.value for e in 
 at = AppTest.from_file(APP, default_timeout=30); at.query_params["code"] = "x"; at.query_params["state"] = "palsu"; at.run()
 ok &= check("callback palsu", at)
 # semua halaman setelah masuk
-for page in ["Kuota", "Berkas", "Unggah", "Dibagikan", "Sampah", "Pengaturan"]:
+for page in ["Kuota", "Berkas", "Unggah", "Dibagikan", "Galeri", "Sampah", "Pengaturan"]:
     at = AppTest.from_file(APP, default_timeout=30)
     at.session_state["user_id"] = user.id
     at.session_state["menu"] = page
@@ -86,4 +86,20 @@ boxes = [c for c in at.checkbox if str(c.key).startswith("sel")]
 if boxes:
     boxes[0].check().run(); ok &= check("pilih berkas", at)
 print("folder:", [f.name for f in service.list_subfolders(get_session_factory(s.database_url)(), user.id, None)])
+# galeri: publik valid / salah, dan membuat galeri lewat halaman
+img = [f for f, _ in service.list_files(db, user.id, recent=True) if f.mime_type.startswith("image/")][0]
+gal = service.create_gallery(db, user.id, "Uji", [img.id], 7)
+at = AppTest.from_file(APP, default_timeout=60); at.query_params["g"] = gal.token; at.run()
+ok &= check("galeri publik valid", at); assert any("Uji" in t.value for t in at.title)
+at = AppTest.from_file(APP, default_timeout=30); at.query_params["g"] = "salah"; at.run()
+ok &= check("galeri publik salah", at); assert any("tidak berlaku" in e.value for e in at.error)
+at = AppTest.from_file(APP, default_timeout=30)
+at.session_state["user_id"] = user.id; at.session_state["menu"] = "Galeri"; at.run()
+at.text_input(key="g_title").set_value("Baru"); at.multiselect(key="g_files").set_value([img.id]).run()
+at.button(key="g_make").click().run(); ok &= check("buat galeri", at)
+# pengaturan menampilkan tombol Yandex
+at = AppTest.from_file(APP, default_timeout=30)
+at.session_state["user_id"] = user.id; at.session_state["menu"] = "Pengaturan"; at.run()
+assert any("Yandex" in (b.label or "") for b in at.get("link_button")), "tombol Yandex hilang"
+ok &= check("tombol yandex", at)
 sys.exit(0 if ok else 1)
