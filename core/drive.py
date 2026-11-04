@@ -41,7 +41,33 @@ class TooLarge(DriveError):
     pass
 
 
+class MissingScope(DriveError):
+    """Google tidak memberikan izin Drive pada token."""
+
+
+DRIVE_SCOPE = "https://www.googleapis.com/auth/drive"
+SCOPE_HINT = (
+    "Izin Google Drive belum diberikan untuk akun ini. Hubungkan ulang akun ini dan pada layar "
+    "izin Google, centang semua kotak (terutama izin untuk melihat, mengedit, dan menghapus file Google Drive)."
+)
+
+
+def has_drive_scope(scope) -> bool:
+    if isinstance(scope, str):
+        scope = scope.split()
+    return DRIVE_SCOPE in set(scope or [])
+
+
+def is_insufficient_scope(exc: Exception) -> bool:
+    """403 karena token tidak punya izin (bukan karena Drive API belum diaktifkan)."""
+    return isinstance(exc, HttpError) and getattr(exc.resp, "status", None) == 403 and (
+        "insufficient" in str(exc).lower()
+    )
+
+
 def friendly_error(exc: Exception) -> str:
+    if is_insufficient_scope(exc):
+        return SCOPE_HINT
     if isinstance(exc, HttpError):
         status = getattr(exc.resp, "status", "?")
         reason = ""
@@ -97,6 +123,9 @@ def exchange_code(
     if code_verifier:
         flow.code_verifier = code_verifier
     flow.fetch_token(code=code)
+    granted = flow.oauth2session.token.get("scope")
+    if not has_drive_scope(granted):
+        raise MissingScope(SCOPE_HINT)
     creds = flow.credentials
     response = requests.get(
         "https://www.googleapis.com/oauth2/v3/userinfo",

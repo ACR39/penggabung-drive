@@ -154,6 +154,14 @@ def service_for(db: Session, settings: Settings, acc: Account):
     return drive.drive_service(creds)
 
 
+def _flag_scope_problem(db: Session, acc: Account, exc: Exception) -> None:
+    """Bila 403 karena izin kurang, tandai akun supaya UI meminta hubungkan ulang."""
+    if drive.is_insufficient_scope(exc):
+        acc.status = "reauth"
+        acc.last_error = drive.SCOPE_HINT
+        db.commit()
+
+
 def refresh_quota(db: Session, settings: Settings, acc: Account) -> None:
     service = service_for(db, settings, acc)
     try:
@@ -161,6 +169,7 @@ def refresh_quota(db: Session, settings: Settings, acc: Account) -> None:
     except Exception as exc:
         acc.last_error = _error_text(exc)
         db.commit()
+        _flag_scope_problem(db, acc, exc)
         raise AppError(acc.last_error) from exc
     acc.total_bytes = quota.total
     acc.used_bytes = quota.used
@@ -366,6 +375,7 @@ def upload_batch(
     """items: (nama, mime, ukuran, objek_file). Tiap file memilih akunnya sendiri."""
     results: list[UploadResult] = []
     for index, (name, mime, size, fileobj) in enumerate(items):
+        acc = None
         try:
             acc = choose_account(db, settings, user_id, size, target_id)
             if acc is None:
@@ -400,6 +410,8 @@ def upload_batch(
             results.append(UploadResult(name, True, "Berhasil", acc.email))
         except Exception as exc:
             db.rollback()
+            if acc is not None:
+                _flag_scope_problem(db, acc, exc)
             results.append(UploadResult(name, False, _error_text(exc)))
     return results
 
@@ -411,6 +423,7 @@ def sync_account_files(db: Session, settings: Settings, acc: Account) -> dict[st
         folder = drive.ensure_app_folder(service, acc.app_folder_id)
         remote = {f["id"]: f for f in drive.list_folder_files(service, folder)}
     except Exception as exc:
+        _flag_scope_problem(db, acc, exc)
         raise AppError(_error_text(exc)) from exc
     if folder != acc.app_folder_id:
         acc.app_folder_id = folder

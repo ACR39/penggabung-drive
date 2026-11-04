@@ -428,3 +428,49 @@ def test_postgres_urls_are_pinned_to_psycopg2():
     assert _normalize_url("postgres://u:p@h/db") == "postgresql+psycopg2://u:p@h/db"
     assert _normalize_url("postgresql+psycopg2://u:p@h/db").startswith("postgresql+psycopg2://")
     assert _normalize_url("sqlite:///x.db") == "sqlite:///x.db"
+
+
+# ------------------------------------------------------------ izin Drive kurang (403 Insufficient Permission)
+
+
+def _http_error(status, text):
+    from googleapiclient.errors import HttpError
+
+    class Resp(dict):
+        reason = "x"
+
+    resp = Resp(status=str(status))
+    resp.status = status
+    return HttpError(resp, text.encode())
+
+
+def test_scope_helpers():
+    from core import drive
+
+    assert drive.has_drive_scope("openid https://www.googleapis.com/auth/drive email")
+    assert drive.has_drive_scope(["https://www.googleapis.com/auth/drive"])
+    assert not drive.has_drive_scope(["openid", "https://www.googleapis.com/auth/userinfo.email"])
+    assert not drive.has_drive_scope(None)
+    assert drive.is_insufficient_scope(_http_error(403, '{"error":{"message":"Insufficient Permission"}}'))
+    assert not drive.is_insufficient_scope(_http_error(403, '{"error":{"message":"Drive API has not been used"}}'))
+    assert not drive.is_insufficient_scope(_http_error(404, "Insufficient"))
+    assert drive.friendly_error(_http_error(403, "Insufficient Permission")) == drive.SCOPE_HINT
+
+
+def test_insufficient_permission_marks_account_for_reconnect(env, monkeypatch):
+    db, settings, user, (a0, a1), _ = env
+    err = _http_error(403, "Insufficient Permission")
+
+    def boom(*args, **kwargs):
+        raise err
+
+    monkeypatch.setattr(service.drive, "get_quota", boom)
+    with pytest.raises(service.AppError) as info:
+        service.refresh_quota(db, settings, a0)
+    assert "Izin Google Drive" in str(info.value)
+    assert a0.status == "reauth" and "centang" in a0.last_error
+
+    monkeypatch.setattr(service.drive, "upload_file", boom)
+    res = service.upload_batch(db, settings, user.id, [("x.txt", "t/p", 5, io.BytesIO(b"1"))], None)
+    assert not res[0].ok and "Izin Google Drive" in res[0].message
+    assert a1.status == "reauth"  # akun yang terpilih untuk unggahan ikut ditandai

@@ -71,6 +71,12 @@ Buka <http://localhost:8501>, klik **Masuk dengan Google**, lalu setujui semua i
 - Di Supabase, pakai alamat **connection pooler**, bukan koneksi langsung.
 - Kuota Google disegarkan **di latar belakang** (bila lebih dari 5 menit), jadi halaman tidak menunggu Google. Angka terbaru terlihat pada klik berikutnya. Tombol *Segarkan* menyegarkan semua akun sekaligus.
 
+## Galat 403 dari Google Drive
+
+- **"Insufficient Permission"**: layar izin Google memungkinkan satu per satu kotak izin tidak dicentang. Bila izin Drive tidak dicentang, token tidak bisa memakai Drive. Aplikasi sekarang memeriksanya saat masuk dan menandai akun sebagai *Hubungkan ulang*. Perbaikannya: **Pengaturan → Hubungkan akun Google lain**, pilih akun yang sama, lalu **centang semua kotak izin**. Bila layar izin tidak muncul lagi, buka <https://myaccount.google.com/permissions>, hapus akses "Penggabung Drive" (atau nama aplikasimu), lalu hubungkan ulang.
+- **"Google Drive API has not been used in project..."**: Drive API belum diaktifkan di proyek Google Cloud yang sama dengan OAuth client. Aktifkan di *APIs & Services → Library → Google Drive API*, lalu tunggu beberapa menit.
+- **"access_denied"** saat masuk: status layar persetujuan masih *Testing* dan akun belum didaftarkan di **Test users**.
+
 ## Batasan yang perlu diketahui
 
 - **Login tidak bertahan saat halaman dimuat ulang.** Streamlit tidak menyimpan sesi. Klik *Masuk dengan Google* lagi, biasanya langsung masuk tanpa mengetik apa pun.

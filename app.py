@@ -225,6 +225,10 @@ def handle_callback(settings: Settings, db) -> None:
         return
     try:
         creds, profile = drive.exchange_code(settings, code or "", pending.code_verifier)
+    except drive.MissingScope as exc:
+        st.session_state["need_consent"] = True  # login berikutnya memaksa layar izin tampil lagi
+        flash("err", str(exc))
+        return
     except Exception as exc:
         flash("err", f"Gagal menukar kode Google: {drive.friendly_error(exc)}")
         return
