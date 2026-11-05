@@ -51,7 +51,7 @@ header[data-testid="stHeader"] { background:transparent; }
 /* kartu & tombol */
 [data-testid="stVerticalBlockBorderWrapper"] { border-radius:16px; border:1px solid #eceef6; background:#fff !important; box-shadow:0 4px 18px rgba(30,41,90,.05); }
 .stButton > button, .stDownloadButton > button, [data-testid="stBaseLinkButton-secondary"], [data-testid="stBaseLinkButton-primary"] { border-radius:12px; font-weight:500; }
-.stButton > button[kind="secondary"], .stDownloadButton > button { border:1px solid #e5e7f2; background:#fff; box-shadow:0 1px 2px rgba(30,41,90,.06); }
+.stButton > button[kind="secondary"], .stDownloadButton > button[kind="secondary"] { border:1px solid #e5e7f2; background:#fff; box-shadow:0 1px 2px rgba(30,41,90,.06); }
 [data-testid="stBaseButton-primary"], [data-testid="stBaseLinkButton-primary"] { box-shadow:0 8px 18px rgba(79,70,229,.30); }
 [data-baseweb="input"], [data-baseweb="select"] > div, [data-baseweb="base-input"] { border-radius:12px !important; }
 
@@ -99,6 +99,15 @@ header[data-testid="stHeader"] { background:transparent; }
 </style>
 """
 st.markdown(CSS, unsafe_allow_html=True)
+
+def hide_sidebar() -> None:
+    """Halaman tanpa menu (login, tautan publik) tidak perlu sidebar sama sekali."""
+    st.markdown(
+        "<style>[data-testid='stSidebar'],[data-testid='stSidebarCollapsedControl'],"
+        "[data-testid='collapsedControl'],[data-testid='stSidebarCollapseButton']{display:none !important}</style>",
+        unsafe_allow_html=True,
+    )
+
 
 LOGO_SVG = (
     '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" '
@@ -206,6 +215,7 @@ def logout() -> None:
 
 
 def public_page(settings: Settings, db, token: str) -> None:
+    hide_sidebar()
     st.title("🔗 Berkas dibagikan")
     found = service.resolve_public_share(db, token)
     if not found:
@@ -226,7 +236,7 @@ def public_page(settings: Settings, db, token: str) -> None:
             st.rerun()
         return
     data, name, mime = st.session_state[key]
-    st.download_button("⬇️ Unduh berkas", data, file_name=name, mime=mime, type="primary")
+    st.download_button("Unduh berkas", data, file_name=name, mime=mime, type="primary", icon=":material/download:")
 
 
 # ------------------------------------------------------------------ login & callback
@@ -342,6 +352,7 @@ def db_ping_caption(settings: Settings) -> None:
 
 
 def login_page(settings: Settings) -> None:
+    hide_sidebar()
     left, mid, right = st.columns([1, 1.6, 1])  # CSS membuatnya satu kolom di hp
     with mid:
         st.markdown('<span class="login-mark"></span>', unsafe_allow_html=True)
@@ -587,6 +598,18 @@ def selection_bar(settings: Settings, db, user, picked) -> None:
                     st.error(str(exc))
             if st.session_state.get("new_share"):
                 st.code(f"{settings.app_url}/?s={st.session_state['new_share']}", language=None)
+            for share, shared_file in service.list_shares(db, user.id):
+                if shared_file.id != item.id:
+                    continue
+                st.caption(
+                    "Tautan aktif · " + ("tanpa batas waktu" if share.expires_at is None else f"sampai {fmt_dt(share.expires_at)} UTC")
+                )
+                if st.button("Matikan tautan ini", key=f"off_sel_{share.id}", icon=":material/link_off:"):
+                    service.disable_share(db, user.id, share.id)
+                    if st.session_state.get("new_share") == share.token:
+                        st.session_state.pop("new_share")
+                    flash("ok", "Tautan dimatikan. Orang yang punya link tidak bisa membukanya lagi.")
+                    st.rerun()
 
 
 def sync_all(db, settings: Settings, user) -> None:
@@ -834,6 +857,7 @@ def show_photo(settings: Settings, gallery_id: str, file_id: str, name: str, all
 
 
 def public_gallery(settings: Settings, db, token: str) -> None:
+    hide_sidebar()
     found = service.resolve_gallery(db, token)
     if not found:
         st.title("🖼️ Galeri")
@@ -1129,9 +1153,8 @@ def main() -> None:
             queries, seconds = STATS.snapshot()
             elapsed = time.perf_counter() - started
             st.session_state["_stats"] = (queries, seconds, elapsed)
-            st.sidebar.caption(
-                f"⏱ {elapsed * 1000:.0f} ms total · {queries} kueri ({seconds * 1000:.0f} ms di database)"
-            )
+            note = f"⏱ {elapsed * 1000:.0f} ms total · {queries} kueri ({seconds * 1000:.0f} ms di database)"
+            (st.sidebar if st.session_state.get("user_id") else st).caption(note)
 
 
 main()
