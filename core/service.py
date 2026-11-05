@@ -28,6 +28,7 @@ from .db import (
     Folder,
     Gallery,
     GalleryItem,
+    ImportSource,
     RoutingPolicy,
     Share,
     User,
@@ -474,7 +475,8 @@ def sync_account_files(db: Session, settings: Settings, acc: Account) -> dict[st
     if folder != acc.app_folder_id:
         acc.app_folder_id = folder
     existing = {
-        f.drive_file_id: f for f in db.scalars(select(File).where(File.account_id == acc.id))
+        f.drive_file_id: f
+        for f in db.scalars(select(File).where(File.account_id == acc.id, File.source_id.is_(None)))
     }
     created = updated = removed = 0
     for remote_id, item in remote.items():
@@ -982,3 +984,136 @@ def gallery_thumbs(settings: Settings, gallery_id: str, file_ids: Sequence[str],
         return {}
     with ThreadPoolExecutor(max_workers=min(max_workers, len(ids))) as pool:
         return dict(pool.map(work, ids))
+
+
+# ---------------------------------------------------------------- Impor dari Drive
+
+MAX_IMPORT_FILES = 5000
+
+
+def _google_account(db: Session, user_id: str, account_id: str) -> Account:
+    acc = db.get(Account, account_id)
+    if acc is None or acc.user_id != user_id:
+        raise AppError("Akun tidak ditemukan.")
+    if acc.provider != "google":
+        raise AppError("Impor dari Drive hanya tersedia untuk akun Google.")
+    return acc
+
+
+def browse_drive_folders(
+    db: Session, settings: Settings, user_id: str, account_id: str, parent_id: str = "root"
+) -> list[tuple[str, str]]:
+    acc = _google_account(db, user_id, account_id)
+    service = service_for(db, settings, acc)
+    try:
+        return [(f["id"], f["name"]) for f in drive.list_child_folders(service, parent_id)]
+    except Exception as exc:
+        _flag_scope_problem(db, acc, exc)
+        raise AppError(_error_text(exc)) from exc
+
+
+def list_import_sources(db: Session, user_id: str) -> list[tuple[ImportSource, str]]:
+    rows = db.execute(
+        select(ImportSource, Account.email)
+        .join(Account, ImportSource.account_id == Account.id)
+        .where(ImportSource.user_id == user_id)
+        .order_by(ImportSource.created_at)
+    )
+    return [(src, email) for src, email in rows]
+
+
+def add_import_source(
+    db: Session, user_id: str, account_id: str, folder_id: str, name: str
+) -> ImportSource:
+    acc = _google_account(db, user_id, account_id)
+    if not folder_id or folder_id == "root":
+        raise AppError("Pilih sebuah folder, bukan seluruh Drive.")
+    dup = db.scalar(
+        select(ImportSource).where(
+            ImportSource.account_id == acc.id, ImportSource.drive_folder_id == folder_id
+        )
+    )
+    if dup is not None:
+        raise AppError("Folder ini sudah diimpor.")
+    src = ImportSource(
+        user_id=user_id, account_id=acc.id, drive_folder_id=folder_id, name=(name or "Folder")[:255]
+    )
+    db.add(src)
+    db.commit()
+    return src
+
+
+def _parse_time(value: Optional[str]):
+    from datetime import datetime, timezone
+
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(timezone.utc).replace(tzinfo=None)
+    except ValueError:
+        return None
+
+
+def sync_import_source(db: Session, settings: Settings, user_id: str, source_id: str) -> dict[str, int]:
+    """Catat berkas dari folder Drive (beserta sub-foldernya). Berkas tidak dipindah atau diubah."""
+    src = db.get(ImportSource, source_id)
+    if src is None or src.user_id != user_id:
+        raise AppError("Sumber impor tidak ditemukan.")
+    acc = _google_account(db, user_id, src.account_id)
+    service = service_for(db, settings, acc)
+    try:
+        items, truncated = drive.list_tree_files(service, src.drive_folder_id, MAX_IMPORT_FILES)
+    except Exception as exc:
+        _flag_scope_problem(db, acc, exc)
+        raise AppError(_error_text(exc)) from exc
+    remote = {f["id"]: f for f in items}
+    existing = {
+        f.drive_file_id: f for f in db.scalars(select(File).where(File.account_id == acc.id))
+    }
+    created = updated = removed = 0
+    for rid, item in remote.items():
+        name, mime = item["name"][:255], item["mimeType"]
+        size = int(item.get("size", 0))
+        current = existing.get(rid)
+        if current is None:
+            db.add(
+                File(
+                    user_id=user_id,
+                    account_id=acc.id,
+                    drive_file_id=rid,
+                    name=name,
+                    mime_type=mime,
+                    size_bytes=size,
+                    source_id=src.id,
+                    created_at=_parse_time(item.get("modifiedTime")) or utcnow(),
+                )
+            )
+            created += 1
+        elif current.source_id == src.id:
+            if current.status == "deleted":
+                current.status, current.deleted_at = "active", None
+                updated += 1
+            if (current.name, current.mime_type, current.size_bytes) != (name, mime, size):
+                current.name, current.mime_type, current.size_bytes = name, mime, size
+                updated += 1
+    if not truncated:  # bila daftar terpotong, jangan simpulkan ada berkas yang hilang
+        for rid, current in existing.items():
+            if current.source_id == src.id and rid not in remote and current.status != "deleted":
+                current.status, current.deleted_at = "deleted", utcnow()
+                removed += 1
+    src.last_synced_at, src.last_truncated = utcnow(), truncated
+    db.commit()
+    return {"dibuat": created, "diperbarui": updated, "dihapus": removed, "terpotong": int(truncated)}
+
+
+def remove_import_source(db: Session, user_id: str, source_id: str) -> int:
+    """Hapus sumber dan catatan berkas dari aplikasi. Berkas di Drive tidak disentuh."""
+    src = db.get(ImportSource, source_id)
+    if src is None or src.user_id != user_id:
+        raise AppError("Sumber impor tidak ditemukan.")
+    rows = list(db.scalars(select(File).where(File.source_id == src.id)))
+    for item in rows:
+        db.delete(item)
+    db.delete(src)
+    db.commit()
+    return len(rows)

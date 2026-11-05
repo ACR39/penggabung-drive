@@ -322,3 +322,61 @@ def list_folder_files(service, folder_id: str) -> list[dict]:
         token = response.get("nextPageToken")
         if not token:
             return files
+
+
+def list_child_folders(service, parent_id: str) -> list[dict]:
+    """Sub-folder langsung di dalam parent_id ("root" = Drive Saya), urut nama."""
+    folders: list[dict] = []
+    token = None
+    while True:
+        response = (
+            service.files()
+            .list(
+                q=f"'{parent_id}' in parents and mimeType = '{FOLDER_MIME}' and trashed = false",
+                spaces="drive",
+                fields="nextPageToken,files(id,name)",
+                orderBy="name",
+                pageSize=200,
+                pageToken=token,
+            )
+            .execute()
+        )
+        folders.extend(response.get("files", []))
+        token = response.get("nextPageToken")
+        if not token:
+            return folders
+
+
+def list_tree_files(service, folder_id: str, max_files: int = 5000) -> tuple[list[dict], bool]:
+    """Semua file di folder beserta seluruh sub-foldernya. Mengembalikan (file, terpotong)."""
+    files: list[dict] = []
+    queue = [folder_id]
+    seen = set(queue)
+    while queue:
+        current = queue.pop(0)
+        token = None
+        while True:
+            response = (
+                service.files()
+                .list(
+                    q=f"'{current}' in parents and trashed = false",
+                    spaces="drive",
+                    fields="nextPageToken,files(id,name,mimeType,size,modifiedTime)",
+                    pageSize=1000,
+                    pageToken=token,
+                )
+                .execute()
+            )
+            for item in response.get("files", []):
+                if item["mimeType"] == FOLDER_MIME:
+                    if item["id"] not in seen:
+                        seen.add(item["id"])
+                        queue.append(item["id"])
+                elif item["mimeType"] != "application/vnd.google-apps.shortcut":
+                    files.append(item)
+                    if len(files) >= max_files:
+                        return files, True
+            token = response.get("nextPageToken")
+            if not token:
+                break
+    return files, False

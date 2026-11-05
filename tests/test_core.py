@@ -694,3 +694,53 @@ def test_gallery_create_resolve_and_thumbnail(env, monkeypatch):
     imgs[0].status = "active"
     db.commit()
     assert service.resolve_gallery(db, g.token) is None  # kedaluwarsa
+
+
+# ------------------------------------------------------------ impor dari Drive
+
+
+def test_import_source_sync_and_scoping(env, monkeypatch):
+    db, settings, user, accounts = env[0], env[1], env[2], env[3]
+    acc = accounts[0]
+    remote = [
+        {"id": "r1", "name": "a.jpg", "mimeType": "image/jpeg", "size": "10", "modifiedTime": "2024-03-01T10:00:00Z"},
+        {"id": "r2", "name": "b.pdf", "mimeType": "application/pdf", "size": "20"},
+    ]
+    state = {"items": remote, "cut": False}
+    monkeypatch.setattr(service.drive, "list_tree_files", lambda *_: (list(state["items"]), state["cut"]))
+    with pytest.raises(service.AppError):
+        service.add_import_source(db, user.id, acc.id, "root", "Drive Saya")  # seluruh Drive ditolak
+    src = service.add_import_source(db, user.id, acc.id, "F1", "Foto lama")
+    with pytest.raises(service.AppError):
+        service.add_import_source(db, user.id, acc.id, "F1", "Foto lama")  # kembar ditolak
+    out = service.sync_import_source(db, settings, user.id, src.id)
+    assert out["dibuat"] == 2
+    got = {f.drive_file_id: f for f, _ in service.list_files(db, user.id, recent=True)}
+    assert got["r1"].created_at == datetime(2024, 3, 1, 10, 0)
+    # berkas lokal bukan dari impor tidak boleh dianggap hilang oleh sinkron impor
+    db.add(File(user_id=user.id, account_id=acc.id, drive_file_id="own", name="own.txt", size_bytes=1))
+    db.commit()
+    state["items"] = remote[:1]
+    out = service.sync_import_source(db, settings, user.id, src.id)
+    assert out["dihapus"] == 1
+    own = db.query(File).filter_by(drive_file_id="own").one()
+    assert own.status == "active"
+    # daftar terpotong: jangan menandai hilang
+    state["items"], state["cut"] = [], True
+    assert service.sync_import_source(db, settings, user.id, src.id)["dihapus"] == 0
+    # sinkron folder aplikasi tidak menyentuh berkas impor
+    monkeypatch.setattr(service.drive, "list_folder_files", lambda *_: [])
+    monkeypatch.setattr(service, "refresh_quota", lambda *a: None)
+    service.sync_account_files(db, settings, acc)
+    assert db.query(File).filter_by(drive_file_id="r1").one().status == "active"
+    assert service.remove_import_source(db, user.id, src.id) == 2
+    assert db.query(File).filter_by(drive_file_id="r1").count() == 0
+    assert db.query(File).filter_by(drive_file_id="own").count() == 1
+
+
+def test_import_rejects_yandex_account(env):
+    db, user, accounts = env[0], env[2], env[3]
+    accounts[0].provider = "yandex"
+    db.commit()
+    with pytest.raises(service.AppError):
+        service.add_import_source(db, user.id, accounts[0].id, "F1", "x")

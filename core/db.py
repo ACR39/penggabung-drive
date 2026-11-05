@@ -105,6 +105,20 @@ class Folder(Base):
     updated_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True, default=utcnow)
 
 
+class ImportSource(Base):
+    """Folder Drive yang dicatat ke dashboard tanpa memindahkan berkasnya."""
+
+    __tablename__ = "import_sources"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
+    account_id: Mapped[str] = mapped_column(ForeignKey("accounts.id"), index=True)
+    drive_folder_id: Mapped[str] = mapped_column(String(191))
+    name: Mapped[str] = mapped_column(String(255))
+    last_synced_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    last_truncated: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
 class File(Base):
     __tablename__ = "files"
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
@@ -119,6 +133,7 @@ class File(Base):
     size_bytes: Mapped[int] = mapped_column(BigInteger, default=0)
     status: Mapped[str] = mapped_column(String(16), default="active")  # active | trashed | deleted
     starred: Mapped[bool] = mapped_column(Boolean, default=False)
+    source_id: Mapped[Optional[str]] = mapped_column(String(36), nullable=True, index=True)  # ImportSource
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     deleted_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
@@ -231,6 +246,7 @@ _MIGRATIONS = [
     ("folders", "icon", "VARCHAR(16) DEFAULT 'folder'"),
     ("folders", "updated_at", "TIMESTAMP"),
     ("files", "starred", "BOOLEAN DEFAULT FALSE"),
+    ("files", "source_id", "VARCHAR(36)"),
     ("accounts", "provider", "VARCHAR(16) DEFAULT 'google'"),
 ]
 

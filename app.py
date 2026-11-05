@@ -598,6 +598,12 @@ def sync_all(db, settings: Settings, user) -> None:
                 created, updated, removed = created + out["dibuat"], updated + out["diperbarui"], removed + out["dihapus"]
             except AppError as exc:
                 flash("err", f"{acc.email}: {exc}")
+        for src, _ in service.list_import_sources(db, user.id):
+            try:
+                out = service.sync_import_source(db, settings, user.id, src.id)
+                created, updated, removed = created + out["dibuat"], updated + out["diperbarui"], removed + out["dihapus"]
+            except AppError as exc:
+                flash("err", f"{src.name}: {exc}")
     flash("ok", f"Sinkron selesai: {created} baru, {updated} diperbarui, {removed} hilang.")
 
 
@@ -926,6 +932,62 @@ def page_trash(settings: Settings, db, user) -> None:
         st.rerun()
 
 
+def import_panel(settings: Settings, db, user, acc) -> None:
+    """Pilih folder Drive lama untuk dicatat di dashboard (berkas tidak dipindah)."""
+    stack_key = f"imp_{acc.id}"
+    stack = st.session_state.setdefault(stack_key, [("root", "Drive Saya")])
+    here_id, here_name = stack[-1]
+    st.caption("Pilih folder di Google Drive-mu. Isinya (termasuk sub-folder) dicatat di Berkas, tanpa dipindah atau diubah.")
+    st.markdown("**Lokasi:** " + " › ".join(esc(n) for _, n in stack), unsafe_allow_html=True)
+    top = st.columns([1, 1.6, 3])
+    if len(stack) > 1 and top[0].button("Naik", key=f"imp_up_{acc.id}", icon=":material/arrow_upward:"):
+        stack.pop()
+        st.rerun()
+    if here_id != "root" and top[1].button("Impor folder ini", key=f"imp_add_{acc.id}", type="primary"):
+        try:
+            src = service.add_import_source(db, user.id, acc.id, here_id, here_name)
+            with st.spinner("Membaca isi folder…"):
+                out = service.sync_import_source(db, settings, user.id, src.id)
+            note = " (daftar dipotong di 5.000 berkas)" if out["terpotong"] else ""
+            flash("ok", f"“{here_name}”: {out['dibuat']} berkas dicatat{note}.")
+        except AppError as exc:
+            flash("err", str(exc))
+        st.rerun()
+    try:
+        folders = service.browse_drive_folders(db, settings, user.id, acc.id, here_id)
+    except AppError as exc:
+        st.error(str(exc))
+        folders = []
+    if not folders:
+        st.caption("Tidak ada sub-folder di sini.")
+    for fid, name in folders[:60]:
+        if st.button(name, key=f"imp_open_{acc.id}_{fid}", icon=":material/folder:", width="stretch"):
+            stack.append((fid, name))
+            st.rerun()
+    if len(folders) > 60:
+        st.caption(f"Menampilkan 60 dari {len(folders)} folder.")
+    mine = [(src, e) for src, e in service.list_import_sources(db, user.id) if src.account_id == acc.id]
+    if mine:
+        st.divider()
+        st.markdown("**Folder yang sudah diimpor**")
+    for src, _ in mine:
+        c = st.columns([4, 1.4, 1.2])
+        c[0].markdown(f"📁 {esc(src.name)}")
+        c[0].caption("Belum disinkronkan" if not src.last_synced_at else f"Sinkron terakhir {fmt_dt(src.last_synced_at)} UTC")
+        if c[1].button("Sinkronkan", key=f"imp_sync_{src.id}"):
+            try:
+                with st.spinner("Membaca isi folder…"):
+                    out = service.sync_import_source(db, settings, user.id, src.id)
+                flash("ok", f"{src.name}: {out['dibuat']} baru, {out['diperbarui']} diperbarui, {out['dihapus']} hilang.")
+            except AppError as exc:
+                flash("err", str(exc))
+            st.rerun()
+        if c[2].button("Lepas", key=f"imp_rm_{src.id}"):
+            n = service.remove_import_source(db, user.id, src.id)
+            flash("ok", f"Folder dilepas. {n} catatan berkas dihapus dari aplikasi; berkas di Drive aman.")
+            st.rerun()
+
+
 def page_settings(settings: Settings, db, user) -> None:
     page_header("Pengaturan", "Kelola akun penyimpanan yang terhubung.")
     show_flash()
@@ -970,6 +1032,9 @@ def page_settings(settings: Settings, db, user) -> None:
                     st.rerun()
             if acc.status != "connected" and acc.last_error:
                 st.caption(acc.last_error)
+            if acc.provider == "google" and acc.status == "connected":
+                with st.expander("Impor dari Drive"):
+                    import_panel(settings, db, user, acc)
     if not accounts:
         st.info("Belum ada akun.")
 

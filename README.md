@@ -129,3 +129,10 @@ Opsi mengizinkan unduh bersifat per galeri. Pengunjung tetap bisa menyimpan foto
 
 Aplikasi hanya memakai folder khusus aplikasinya di Yandex Disk. Akun Yandex ikut dalam aturan unggah otomatis,
 kuota gabungan, galeri, dan tautan berbagi. Bagian Yandex diuji dengan respons tiruan, belum dengan akun sungguhan.
+
+## Impor dari Drive (berkas lama)
+
+Di **Pengaturan**, buka "Impor dari Drive" pada akun Google, telusuri folder, lalu tekan **Impor folder ini**.
+Isi folder beserta sub-foldernya dicatat di halaman Berkas tanpa dipindah atau diubah. Tombol **Sinkron** di Berkas
+juga menyegarkan folder yang sudah diimpor. Batas 5.000 berkas per folder; bila terpotong, berkas tidak dianggap hilang.
+Melepas folder hanya menghapus catatannya di aplikasi. Fitur ini khusus akun Google.

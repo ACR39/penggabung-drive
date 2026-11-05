@@ -102,4 +102,11 @@ at = AppTest.from_file(APP, default_timeout=30)
 at.session_state["user_id"] = user.id; at.session_state["menu"] = "Pengaturan"; at.run()
 assert any("Yandex" in (b.label or "") for b in at.get("link_button")), "tombol Yandex hilang"
 ok &= check("tombol yandex", at)
+# panel impor di Pengaturan (Drive dipalsukan)
+from core import service as _svc
+_svc.drive.list_child_folders = lambda *_: [{"id": "F9", "name": "Foto lama"}]
+_svc.service_for = lambda *a: object()
+at = AppTest.from_file(APP, default_timeout=30)
+at.session_state["user_id"] = user.id; at.session_state["menu"] = "Pengaturan"; at.run()
+ok &= check("panel impor", at)
 sys.exit(0 if ok else 1)
