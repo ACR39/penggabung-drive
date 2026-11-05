@@ -136,3 +136,13 @@ Di **Pengaturan**, buka "Impor dari Drive" pada akun Google, telusuri folder, la
 Isi folder beserta sub-foldernya dicatat di halaman Berkas tanpa dipindah atau diubah. Tombol **Sinkron** di Berkas
 juga menyegarkan folder yang sudah diimpor. Batas 5.000 berkas per folder; bila terpotong, berkas tidak dianggap hilang.
 Melepas folder hanya menghapus catatannya di aplikasi. Fitur ini khusus akun Google.
+
+## Unduhan galeri dan pindah antar drive
+
+- **Galeri:** pilih mode unduhan saat membuat galeri: tanpa unduhan, ukuran kecil (JPEG, maks. 1600 px), atau berkas asli
+  (maks. 25 MB). Tombol Unduh ada di tiap kartu foto.
+- **Pindah drive (manual):** di Berkas, pilih berkas lalu "Pindah drive" dan pilih akun tujuan.
+- **Seimbangkan otomatis:** di Kuota, buka "Seimbangkan penyimpanan", atur batas, lihat rencana, lalu jalankan.
+- Urutannya: unduh dari asal, unggah ke tujuan, simpan catatan baru, baru hapus dari asal. Bila unggahan gagal,
+  berkas asal tidak disentuh. Dokumen Google (Docs/Sheets), berkas kosong, dan berkas di atas `MAX_DOWNLOAD_MB`
+  tidak dipindah. Berkas lewat memori server, jadi pindahkan sedikit demi sedikit.

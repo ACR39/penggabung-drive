@@ -154,6 +154,7 @@ class Gallery(Base):
     title: Mapped[str] = mapped_column(String(191))
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     allow_download: Mapped[bool] = mapped_column(Boolean, default=False)
+    download_mode: Mapped[Optional[str]] = mapped_column(String(8), nullable=True)  # none | small | original
     expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
@@ -247,6 +248,7 @@ _MIGRATIONS = [
     ("folders", "updated_at", "TIMESTAMP"),
     ("files", "starred", "BOOLEAN DEFAULT FALSE"),
     ("files", "source_id", "VARCHAR(36)"),
+    ("galleries", "download_mode", "VARCHAR(8)"),
     ("accounts", "provider", "VARCHAR(16) DEFAULT 'google'"),
 ]
 

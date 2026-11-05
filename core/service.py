@@ -853,6 +853,12 @@ def resolve_public_share(db: Session, token: str) -> Optional[tuple[Share, File]
 # ---------------------------------------------------------------- Galeri foto
 
 MAX_GALLERY_ITEMS = 100
+DOWNLOAD_MODES = ("none", "small", "original")
+
+
+def gallery_mode(gallery: Gallery) -> str:
+    """Mode unduh galeri; galeri lama hanya punya allow_download (dianggap "small")."""
+    return gallery.download_mode or ("small" if gallery.allow_download else "none")
 MAX_IMAGE_BYTES = 25 * 1024 * 1024
 THUMB_PX, VIEW_PX = 480, 1600
 _img_lock = threading.Lock()
@@ -871,11 +877,15 @@ def create_gallery(
     title: str,
     file_ids: Sequence[str],
     days: Optional[int],
-    allow_download: bool = False,
+    download_mode: str = "none",
 ) -> Gallery:
     title = (title or "").strip()
     if not title:
         raise AppError("Judul galeri tidak boleh kosong.")
+    if download_mode is True:  # kompatibel dengan pemanggil lama
+        download_mode = "small"
+    if download_mode not in DOWNLOAD_MODES:
+        raise AppError("Pilihan unduhan tidak dikenal.")
     files = [f for f in _owned_files(db, user_id, list(dict.fromkeys(file_ids))) if f.status == "active" and is_image(f)]
     if not files:
         raise AppError("Pilih minimal satu berkas gambar.")
@@ -887,7 +897,8 @@ def create_gallery(
         user_id=user_id,
         token=secrets.token_urlsafe(18),
         title=title[:191],
-        allow_download=allow_download,
+        download_mode=download_mode,
+        allow_download=download_mode != "none",
         expires_at=None if days is None else utcnow() + timedelta(days=days),
     )
     gallery.items = [GalleryItem(file_id=f.id, position=i) for i, f in enumerate(files)]
@@ -1130,3 +1141,153 @@ def remove_import_source(db: Session, user_id: str, source_id: str) -> int:
     db.delete(src)
     db.commit()
     return len(rows)
+
+
+def gallery_download(db: Session, settings: Settings, gallery: Gallery, file_id: str) -> tuple[bytes, str, str]:
+    """Isi unduhan galeri sesuai mode: (data, nama, mime). Mode "none" ditolak."""
+    mode = gallery_mode(gallery)
+    if mode == "none":
+        raise AppError("Galeri ini tidak mengizinkan unduhan.")
+    if file_id not in {e.file_id for e in gallery.items}:
+        raise AppError("Foto tidak ada di galeri ini.")
+    item = db.get(File, file_id)
+    if item is None or item.status != "active":
+        raise AppError("Foto tidak tersedia.")
+    if mode == "small":
+        data = gallery_image(db, settings, gallery, file_id, VIEW_PX)
+        return data, item.name.rsplit(".", 1)[0] + ".jpg", "image/jpeg"
+    acc = db.get(Account, item.account_id)
+    if acc is None:
+        raise AppError("Akun penyimpan foto ini sudah dilepas.")
+    try:
+        data, _, mime = _ops(acc).download_bytes(service_for(db, settings, acc), item.drive_file_id, MAX_IMAGE_BYTES)
+    except AppError:
+        raise
+    except Exception as exc:
+        raise AppError(_error_text(exc)) from exc
+    return data, item.name, item.mime_type or mime
+
+
+# ---------------------------------------------------------------- Pindah antar drive
+
+MAX_BALANCE_MOVES = 50
+
+
+def _movable(item: File, max_bytes: int) -> bool:
+    return (
+        item.status == "active"
+        and not (item.mime_type or "").startswith("application/vnd.google-apps.")
+        and 0 < (item.size_bytes or 0) <= max_bytes
+    )
+
+
+def move_to_account(
+    db: Session,
+    settings: Settings,
+    user_id: str,
+    file_ids: Sequence[str],
+    target_id: str,
+    on_progress: Optional[Callable[[int, int], None]] = None,
+) -> tuple[int, list[str]]:
+    """Pindahkan berkas ke akun lain: unduh, unggah ke tujuan, baru hapus dari asal.
+
+    Mengembalikan (jumlah pindah, daftar pesan). Berkas asal tidak dihapus bila unggahan gagal.
+    """
+    target = db.get(Account, target_id)
+    if target is None or target.user_id != user_id:
+        raise AppError("Akun tujuan tidak ditemukan.")
+    if target.status != "connected":
+        raise AppError("Akun tujuan perlu dihubungkan ulang.")
+    limit = settings.max_download_mb * 1024 * 1024
+    files = _owned_files(db, user_id, list(file_ids))
+    moved, notes = 0, []
+    for index, item in enumerate(files):
+        if on_progress:
+            on_progress(index, len(files))
+        if item.account_id == target.id:
+            continue
+        if not _movable(item, limit):
+            notes.append(f"{item.name}: tidak bisa dipindah (dokumen Google, kosong, atau lebih dari {settings.max_download_mb} MB).")
+            continue
+        free = target.available_bytes
+        if free is not None and free < item.size_bytes:
+            notes.append(f"{item.name}: ruang akun tujuan tidak cukup.")
+            continue
+        source = db.get(Account, item.account_id)
+        if source is None:
+            notes.append(f"{item.name}: akun asal sudah dilepas.")
+            continue
+        try:
+            data, _, _ = _ops(source).download_bytes(service_for(db, settings, source), item.drive_file_id, limit)
+            t_service = service_for(db, settings, target)
+            folder = _ops(target).ensure_app_folder(t_service, target.app_folder_id)
+            if folder != target.app_folder_id:
+                target.app_folder_id = folder
+            meta = _ops(target).upload_file(
+                t_service, folder, item.name, item.mime_type, io.BytesIO(data), len(data), None
+            )
+        except Exception as exc:
+            db.rollback()
+            notes.append(f"{item.name}: {_error_text(exc)}")
+            continue
+        old_id, size = item.drive_file_id, item.size_bytes or 0
+        item.account_id, item.drive_file_id, item.source_id = target.id, meta["id"], None
+        target.used_bytes = (target.used_bytes or 0) + size
+        source.used_bytes = max((source.used_bytes or 0) - size, 0)
+        db.commit()  # catatan baru tersimpan sebelum berkas asal dihapus
+        moved += 1
+        try:
+            _ops(source).delete_file(service_for(db, settings, source), old_id)
+        except Exception as exc:
+            notes.append(f"{item.name}: sudah dipindah, tapi salinan lama di {source.email} gagal dihapus ({_error_text(exc)}).")
+    if on_progress:
+        on_progress(len(files), len(files))
+    _forget_accounts(db)
+    return moved, notes
+
+
+@dataclass
+class PlannedMove:
+    file_id: str
+    name: str
+    size: int
+    from_id: str
+    to_id: str
+
+
+def balance_plan(
+    accounts: Sequence[Account],
+    files: Sequence[File],
+    max_bytes: int,
+    threshold: float = 0.9,
+    target: float = 0.8,
+    limit: int = MAX_BALANCE_MOVES,
+) -> list[PlannedMove]:
+    """Rencana memindahkan berkas terbesar dari akun yang lewat batas ke akun yang paling lega."""
+    live = [a for a in accounts if a.status == "connected"]
+    used = {a.id: a.used_bytes or 0 for a in live}
+    plan: list[PlannedMove] = []
+    for src in sorted(live, key=lambda a: -(used[a.id] / a.total_bytes) if a.total_bytes else 0):
+        if not src.total_bytes or used[src.id] / src.total_bytes <= threshold:
+            continue
+        mine = sorted((f for f in files if f.account_id == src.id and _movable(f, max_bytes)), key=lambda f: -f.size_bytes)
+        for item in mine:
+            if used[src.id] <= target * src.total_bytes or len(plan) >= limit:
+                break
+            options = []
+            for dst in live:
+                if dst.id == src.id:
+                    continue
+                if dst.total_bytes is None:
+                    options.append((float("inf"), dst))
+                    continue
+                after = used[dst.id] + item.size_bytes
+                if after <= target * dst.total_bytes:
+                    options.append((dst.total_bytes - after, dst))
+            if not options:
+                continue
+            _, dst = max(options, key=lambda o: o[0])
+            used[src.id] -= item.size_bytes
+            used[dst.id] += item.size_bytes
+            plan.append(PlannedMove(item.id, item.name, item.size_bytes, src.id, dst.id))
+    return plan

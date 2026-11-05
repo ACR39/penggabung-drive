@@ -757,3 +757,82 @@ def test_create_share_reuses_active_link(env):
     service.disable_share(db, user.id, a.id)
     c = service.create_share(db, user.id, f.id, 7)
     assert c.id != a.id  # setelah dimatikan, tautan baru dibuat
+
+
+# ------------------------------------------------------------ unduh galeri + pindah drive
+
+
+def _file(db, user, acc, name, size, mime="image/png", did=None):
+    f = File(user_id=user.id, account_id=acc.id, drive_file_id=did or name, name=name, mime_type=mime, size_bytes=size)
+    db.add(f)
+    db.commit()
+    return f
+
+
+def test_gallery_download_modes(env, monkeypatch):
+    db, settings, user, accounts = env[0], env[1], env[2], env[3]
+    f = _file(db, user, accounts[0], "foto.png", 10)
+    raw = _png("blue")
+    monkeypatch.setattr(service.drive, "download_bytes", lambda *a: (raw, "foto.png", "image/png"))
+    g_none = service.create_gallery(db, user.id, "a", [f.id], None)
+    with pytest.raises(service.AppError):
+        service.gallery_download(db, settings, g_none, f.id)
+    g_orig = service.create_gallery(db, user.id, "b", [f.id], None, "original")
+    data, name, mime = service.gallery_download(db, settings, g_orig, f.id)
+    assert data == raw and name == "foto.png" and mime == "image/png"
+    g_small = service.create_gallery(db, user.id, "c", [f.id], None, "small")
+    data, name, mime = service.gallery_download(db, settings, g_small, f.id)
+    assert name == "foto.jpg" and mime == "image/jpeg" and data != raw
+    with pytest.raises(service.AppError):
+        service.create_gallery(db, user.id, "d", [f.id], None, "aneh")
+    legacy = service.create_gallery(db, user.id, "e", [f.id], None)
+    legacy.download_mode, legacy.allow_download = None, True
+    assert service.gallery_mode(legacy) == "small"
+
+
+def test_move_to_account_updates_records_and_deletes_source(env, monkeypatch):
+    db, settings, user, accounts, store = env
+    a0, a1 = accounts
+    f = _file(db, user, a0, "x.bin", 20, "application/octet-stream")
+    deleted = []
+    monkeypatch.setattr(service.drive, "download_bytes", lambda *a: (b"isi", "x.bin", "application/octet-stream"))
+    monkeypatch.setattr(service.drive, "delete_file", lambda svc, fid: deleted.append(fid))
+    moved, notes = service.move_to_account(db, settings, user.id, [f.id], a1.id)
+    assert moved == 1 and not notes
+    db.refresh(f)
+    assert f.account_id == a1.id and f.drive_file_id.startswith("drv") and deleted == ["x.bin"]
+    assert a1.used_bytes == 80 and a0.used_bytes == 0
+    assert list(store.values()) == [b"isi"]
+
+
+def test_move_to_account_skips_big_and_keeps_source_on_upload_failure(env, monkeypatch):
+    db, settings, user, accounts, store = env
+    a0, a1 = accounts
+    big = _file(db, user, a0, "big.bin", 50)  # tujuan hanya punya 40 kosong
+    doc = _file(db, user, a0, "doc", 5, "application/vnd.google-apps.document")
+    ok = _file(db, user, a0, "ok.bin", 5)
+    deleted = []
+    monkeypatch.setattr(service.drive, "download_bytes", lambda *a: (b"z", "ok.bin", "x"))
+    monkeypatch.setattr(service.drive, "delete_file", lambda svc, fid: deleted.append(fid))
+
+    def boom(*a, **k):
+        raise RuntimeError("unggah gagal")
+
+    monkeypatch.setattr(service.drive, "upload_file", boom)
+    moved, notes = service.move_to_account(db, settings, user.id, [big.id, doc.id, ok.id], a1.id)
+    assert moved == 0 and len(notes) == 3 and deleted == []
+    db.refresh(ok)
+    assert ok.account_id == a0.id  # gagal unggah: berkas dan catatan tetap di asal
+
+
+def test_balance_plan_moves_largest_from_full_to_roomy(env):
+    db, user, accounts = env[0], env[2], env[3]
+    x = Account(user_id=user.id, google_sub="x", email="x@x.com", total_bytes=100, used_bytes=95)
+    y = Account(user_id=user.id, google_sub="y", email="y@x.com", total_bytes=100, used_bytes=10)
+    db.add_all([x, y])
+    db.commit()
+    files = [_file(db, user, x, n, s) for n, s in [("a", 5), ("b", 30), ("c", 20)]]
+    plan = service.balance_plan([x, y], files, 10**9, 0.9, 0.8)
+    assert [(p.name, p.to_id) for p in plan] == [("b", y.id)]  # satu pemindahan sudah cukup (95-30=65)
+    assert service.balance_plan([x, y], files, 10**9, 0.97, 0.8) == []  # belum melewati batas
+    assert service.balance_plan([x, y], files, 4, 0.9, 0.8) == []  # berkas lebih besar dari batas unduh

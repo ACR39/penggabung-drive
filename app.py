@@ -470,6 +470,56 @@ def page_home(settings: Settings, db, user) -> None:
         unsafe_allow_html=True,
     )
     st.caption("Kuota terakhir disinkronkan: " + ", ".join(f"{a.email.split('@')[0]} {fmt_dt(a.last_synced_at)} UTC" for a in connected))
+    if len(connected) >= 2:
+        balance_panel(settings, db, user, connected)
+
+
+def balance_panel(settings: Settings, db, user, connected) -> None:
+    with st.expander("Seimbangkan penyimpanan"):
+        st.caption(
+            "Pindahkan berkas terbesar dari akun yang hampir penuh ke akun yang masih lega. "
+            "Hanya berkas yang tercatat di aplikasi yang dipindah. Berkas asal dihapus setelah salinan di tujuan berhasil."
+        )
+        c = st.columns(2)
+        threshold = c[0].slider("Mulai seimbangkan bila terpakai lebih dari (%)", 50, 99, 90, key="bal_hi")
+        target = c[1].slider("Turunkan sampai (%)", 30, 95, 80, key="bal_lo")
+        if target >= threshold:
+            st.warning("Batas tujuan harus lebih rendah dari batas mulai.")
+            return
+        if st.button("Lihat rencana", key="bal_plan"):
+            files = [f for f, _ in service.list_files(db, user.id, recent=True, limit=5000)]
+            plan = service.balance_plan(
+                connected, files, settings.max_download_mb * 1024 * 1024, threshold / 100, target / 100
+            )
+            st.session_state["bal_result"] = [(m.file_id, m.name, m.size, m.from_id, m.to_id) for m in plan]
+        plan = st.session_state.get("bal_result")
+        if plan is None:
+            return
+        names = {a.id: a.email for a in connected}
+        if not plan:
+            st.success("Tidak ada yang perlu dipindah dengan batas ini.")
+            return
+        total = sum(p[2] for p in plan)
+        st.write(f"{len(plan)} berkas ({fmt_bytes(total)}) akan dipindah:")
+        st.dataframe(
+            pd.DataFrame(
+                [{"Berkas": p[1], "Ukuran": fmt_bytes(p[2]), "Dari": names.get(p[3], "?"), "Ke": names.get(p[4], "?")} for p in plan]
+            ),
+            hide_index=True, width="stretch",
+        )
+        if st.button("Jalankan pemindahan", type="primary", key="bal_run"):
+            bar = st.progress(0.0, text="Memindahkan…")
+            moved, notes, done = 0, [], 0
+            for fid, _, _, _, to_id in plan:
+                m, n = service.move_to_account(db, settings, user.id, [fid], to_id)
+                moved, notes, done = moved + m, notes + n, done + 1
+                bar.progress(done / len(plan), text=f"Memindahkan {done} dari {len(plan)}…")
+            bar.empty()
+            st.session_state.pop("bal_result", None)
+            flash("ok", f"{moved} dari {len(plan)} berkas dipindah.")
+            for note in notes[:5]:
+                flash("err", note)
+            st.rerun()
 
 
 def folder_picker(db, user, label: str, key: str, exclude: str | None = None) -> str | None:
@@ -527,6 +577,35 @@ def style_pickers(prefix: str, color: str, icon: str) -> tuple[str, str]:
     return c, i
 
 
+def move_drive_controls(settings: Settings, db, user, picked) -> None:
+    accounts = [a for a in service.list_accounts(db, user.id, connected_only=True)]
+    if len(accounts) < 2:
+        return
+    st.divider()
+    labels = {
+        a.id: f"{a.email} ({'Yandex' if a.provider == 'yandex' else 'Google'}, "
+        f"{fmt_bytes(a.available_bytes) if a.available_bytes is not None else 'tanpa batas'} kosong)"
+        for a in accounts
+    }
+    c = st.columns([4, 2])
+    target = c[0].selectbox("Pindahkan ke drive", list(labels), format_func=labels.get, key="mv_drive")
+    c[1].write("")
+    c[1].write("")
+    if c[1].button("Pindah drive", icon=":material/drive_file_move:", width="stretch", key="mv_drive_go"):
+        bar = st.progress(0.0, text="Memindahkan…")
+        moved, notes = service.move_to_account(
+            db, settings, user.id, [f.id for f in picked], target,
+            on_progress=lambda i, n: bar.progress(i / max(n, 1), text=f"Memindahkan {min(i + 1, n)} dari {n}…"),
+        )
+        bar.empty()
+        if moved:
+            flash("ok", f"{moved} berkas dipindah ke {labels[target].split(' (')[0]}.")
+        for note in notes[:5]:
+            flash("err", note)
+        clear_selection()
+        st.rerun()
+
+
 def selection_bar(settings: Settings, db, user, picked) -> None:
     if not picked:
         return
@@ -560,6 +639,7 @@ def selection_bar(settings: Settings, db, user, picked) -> None:
         if a[4].button("Batal", width="stretch"):
             clear_selection()
             st.rerun()
+        move_drive_controls(settings, db, user, picked)
         if len(picked) != 1:
             return
         item = picked[0]
@@ -838,7 +918,7 @@ GALLERY_STEP = 12
 
 
 @st.dialog("Foto", width="large")
-def show_photo(settings: Settings, gallery_id: str, file_id: str, name: str, allow_download: bool) -> None:
+def show_photo(settings: Settings, gallery_id: str, file_id: str, name: str, mode: str) -> None:
     from core.db import Gallery, get_session_factory as factory
 
     db = factory(settings.database_url)()
@@ -852,8 +932,28 @@ def show_photo(settings: Settings, gallery_id: str, file_id: str, name: str, all
     finally:
         db.close()
     st.image(data, width="stretch")
-    if allow_download:
-        st.download_button("Unduh foto", data, file_name=name.rsplit(".", 1)[0] + ".jpg", mime="image/jpeg", icon=":material/download:")
+    if mode != "none":
+        st.caption("Tekan Unduh di kartu foto untuk mengunduh." if mode == "original" else "")
+
+
+@st.dialog("Unduh foto")
+def download_photo(settings: Settings, gallery_id: str, file_id: str) -> None:
+    from core.db import Gallery, get_session_factory as factory
+
+    db = factory(settings.database_url)()
+    try:
+        gallery = db.get(Gallery, gallery_id)
+        mode = service.gallery_mode(gallery)
+        with st.spinner("Menyiapkan berkas…"):
+            try:
+                data, name, mime = service.gallery_download(db, settings, gallery, file_id)
+            except AppError as exc:
+                st.error(str(exc))
+                return
+    finally:
+        db.close()
+    st.caption("Berkas asli." if mode == "original" else "Ukuran diperkecil (JPEG, maks. 1600 px).")
+    st.download_button("Simpan ke perangkat", data, file_name=name, mime=mime, type="primary", icon=":material/download:")
 
 
 def public_gallery(settings: Settings, db, token: str) -> None:
@@ -880,8 +980,11 @@ def public_gallery(settings: Settings, db, token: str) -> None:
                     st.caption("Foto tidak bisa dimuat.")
                     continue
                 st.image(data, width="stretch")
+                mode = service.gallery_mode(gallery)
                 if st.button("Perbesar", key=f"zoom_{item.id}", width="stretch"):
-                    show_photo(settings, gallery.id, item.id, item.name, gallery.allow_download)
+                    show_photo(settings, gallery.id, item.id, item.name, mode)
+                if mode != "none" and st.button("Unduh", key=f"dl_{item.id}", width="stretch", icon=":material/download:"):
+                    download_photo(settings, gallery.id, item.id)
     if len(files) > limit:
         if st.button("Tampilkan lebih banyak"):
             st.session_state[f"glim_{token}"] = limit + GALLERY_STEP
@@ -904,10 +1007,11 @@ def page_gallery(settings: Settings, db, user) -> None:
             )
             c1, c2 = st.columns(2)
             label = c1.selectbox("Masa berlaku", list(service.EXPIRY_CHOICES), key="g_exp")
-            allow = c2.checkbox("Izinkan pengunjung mengunduh foto", key="g_dl")
+            dl_labels = {"none": "Tanpa unduhan", "small": "Unduh ukuran kecil (JPEG)", "original": "Unduh berkas asli"}
+            mode = c2.selectbox("Unduhan untuk pengunjung", list(dl_labels), format_func=dl_labels.get, key="g_dl")
             if st.button("Buat galeri", type="primary", key="g_make"):
                 try:
-                    gallery = service.create_gallery(db, user.id, title, picked, service.EXPIRY_CHOICES[label], allow)
+                    gallery = service.create_gallery(db, user.id, title, picked, service.EXPIRY_CHOICES[label], mode)
                     flash("ok", f"Galeri “{gallery.title}” dibuat.")
                 except AppError as exc:
                     flash("err", str(exc))
@@ -915,7 +1019,10 @@ def page_gallery(settings: Settings, db, user) -> None:
     for gallery in service.list_galleries(db, user.id):
         with st.container(border=True):
             cols = st.columns([5, 2, 1])
-            cols[0].markdown(f"**{esc(gallery.title)}** · {len(gallery.items)} foto")
+            cols[0].markdown(
+                f"**{esc(gallery.title)}** · {len(gallery.items)} foto · unduhan: "
+                + {"none": "mati", "small": "ukuran kecil", "original": "berkas asli"}[service.gallery_mode(gallery)]
+            )
             cols[0].code(f"{settings.app_url}/?g={gallery.token}", language=None)
             cols[1].caption(
                 "Tanpa batas waktu" if gallery.expires_at is None else f"Berlaku sampai {fmt_dt(gallery.expires_at)} UTC"

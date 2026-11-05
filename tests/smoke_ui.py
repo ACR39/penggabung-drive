@@ -109,4 +109,22 @@ _svc.service_for = lambda *a: object()
 at = AppTest.from_file(APP, default_timeout=30)
 at.session_state["user_id"] = user.id; at.session_state["menu"] = "Pengaturan"; at.run()
 ok &= check("panel impor", at)
+# halaman Kuota dengan panel seimbangkan (2 akun terhubung) + galeri dengan mode unduh
+at = AppTest.from_file(APP, default_timeout=30)
+at.session_state["user_id"] = user.id; at.session_state["menu"] = "Kuota"; at.run()
+ok &= check("kuota + seimbangkan", at)
+at.button(key="bal_plan").click().run(); ok &= check("rencana seimbang", at)
+import io as _io
+from PIL import Image as _Image
+_buf = _io.BytesIO(); _Image.new("RGB", (40, 30), "green").save(_buf, "JPEG")
+_svc.gallery_thumbs = lambda settings, gid, ids, **k: {i: _buf.getvalue() for i in ids}
+gal2 = service.create_gallery(db, user.id, "Unduh", [img.id], 7, "original")
+at = AppTest.from_file(APP, default_timeout=60); at.query_params["g"] = gal2.token; at.run()
+ok &= check("galeri mode asli", at); assert any("Unduh" == b.label for b in at.button), "tombol unduh kartu hilang"
+at = AppTest.from_file(APP, default_timeout=30)
+at.session_state["user_id"] = user.id; at.session_state["menu"] = "Berkas"; at.run()
+cb = [c for c in at.checkbox if str(c.key).startswith("sel")]
+if cb:
+    cb[0].check().run(); ok &= check("pilih + pindah drive", at)
+    assert any(b.key == "mv_drive_go" for b in at.button), "kontrol pindah drive hilang"
 sys.exit(0 if ok else 1)
