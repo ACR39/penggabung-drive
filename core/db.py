@@ -173,6 +173,17 @@ class GalleryItem(Base):
     gallery: Mapped[Gallery] = relationship(back_populates="items")
 
 
+class Activity(Base):
+    """Jejak aktivitas pengguna (unggah, pindah, bagikan, hubungkan akun, dst.)."""
+
+    __tablename__ = "activities"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
+    action: Mapped[str] = mapped_column(String(32))
+    detail: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
+
+
 class Share(Base):
     __tablename__ = "shares"
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)

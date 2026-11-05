@@ -106,7 +106,24 @@ h1, h2, h3 { letter-spacing:-.01em; }
 .fchip { display:inline-block; background:#f1f5f9; color:#334155; border-radius:6px; padding:.1rem .5rem; font-size:.76rem; max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; vertical-align:top; }
 [class*="st-key-card_"]:has(.fcard) { position:relative; }
 [class*="st-key-card_"]:has(.fcard) [data-testid="stElementContainer"]:has([data-testid="stCheckbox"]) { position:absolute; top:.7rem; right:.7rem; width:auto; height:auto; z-index:3; }
+/* aktivitas dan rincian penyimpanan */
+.act-list { background:#fff; border:1px solid var(--line); border-radius:10px; }
+.act { display:flex; align-items:center; gap:.9rem; padding:.7rem 1.1rem; border-top:1px solid #eef1f5; }
+.act:first-child { border-top:0; }
+.act-tag { flex:none; min-width:8.5rem; text-align:center; padding:.15rem .6rem; border-radius:6px; font-size:.78rem; font-weight:600; }
+.act-detail { flex:1; color:var(--ink); font-size:.92rem; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.act-time { flex:none; color:var(--muted); font-size:.8rem; }
+.usage { margin-top:1.1rem; padding-top:1rem; border-top:1px solid var(--line); }
+.usage .u-row { display:flex; justify-content:space-between; align-items:center; font-size:.86rem; color:#334155; margin-bottom:.4rem; }
+.usage .u-row .dot { display:inline-block; width:8px; height:8px; border-radius:50%; margin-right:.55rem; }
+.usage .u-row b { font-weight:600; color:var(--ink); }
+.usage .u-stack { display:flex; gap:2px; height:8px; border-radius:4px; overflow:hidden; background:#eaeef3; margin:.7rem 0 .55rem; }
+.usage .u-stack > span { display:block; height:100%; }
+.usage .u-total { display:flex; justify-content:space-between; font-size:.86rem; color:#334155; }
 @media (max-width:640px) {
+  .act { flex-wrap:wrap; gap:.3rem .7rem; }
+  .act-detail { flex-basis:100%; order:3; white-space:normal; }
+  .act-tag { min-width:0; }
   .block-container { padding:3.2rem .8rem 3rem !important; }
   [data-testid="stHorizontalBlock"] > [data-testid="stColumn"]:has([data-testid="stButtonGroup"]) { flex:1 1 100% !important; min-width:100% !important; width:100% !important; }
   [data-testid="stButtonGroup"] { width:100%; }
@@ -203,6 +220,33 @@ def bar_html(used: int, total: int | None, color: str | None = None) -> str:
     return f'<div class="bar{warn}"><span style="width:{pct:.1f}%{fill}"></span></div>'
 
 
+USAGE_COLORS = {"foto": "#0e9f8e", "video": "#d9822b", "dokumen": "#2447c9", "lainnya": "#8b5cf6", "kosong": "#cbd5e1"}
+
+
+def usage_html(usage: dict, totals) -> str:
+    """Rincian ruang per jenis berkas. 'Lainnya' juga memuat pemakaian di luar berkas yang tercatat aplikasi."""
+    tracked = sum(usage.values())
+    parts = {k: usage.get(k, 0) for k in ("foto", "video", "dokumen")}
+    parts["lainnya"] = usage.get("lainnya", 0) + max((totals.used or 0) - tracked, 0)
+    names = {"foto": "Foto", "video": "Video", "dokumen": "Dokumen", "lainnya": "Lainnya", "kosong": "Kosong"}
+    parts["kosong"] = totals.free or 0
+    rows = "".join(
+        f'<div class="u-row"><span><span class="dot" style="background:{USAGE_COLORS[k]}"></span>{names[k]}</span>'
+        f"<b>{esc(fmt_bytes(v))}</b></div>"
+        for k, v in parts.items()
+    )
+    total = totals.total or 0
+    stack = "".join(
+        f'<span style="width:{v / total * 100:.2f}%;background:{USAGE_COLORS[k]}"></span>'
+        for k, v in parts.items()
+        if total and v > 0 and k != "kosong"
+    )
+    return (
+        f'<div class="usage">{rows}<div class="u-stack">{stack}</div>'
+        f'<div class="u-total"><b>{esc(fmt_bytes(totals.used))} terpakai</b><span>{esc(fmt_bytes(totals.total))}</span></div></div>'
+    )
+
+
 def account_card_html(acc, color: str = "#2447c9") -> str:
     if acc.status == "connected":
         chip = '<span class="chip">Terhubung</span>'
@@ -221,7 +265,7 @@ def account_card_html(acc, color: str = "#2447c9") -> str:
     )
 
 
-MENU = ["Kuota", "Berkas", "Unggah", "Dibagikan", "Galeri", "Sampah", "Pengaturan"]
+MENU = ["Kuota", "Berkas", "Dibagikan", "Galeri", "Sampah", "Aktivitas", "Pengaturan"]
 
 
 # ------------------------------------------------------------------ pembantu
@@ -229,6 +273,7 @@ MENU = ["Kuota", "Berkas", "Unggah", "Dibagikan", "Galeri", "Sampah", "Pengatura
 
 def flash(kind: str, text: str) -> None:
     """Simpan pesan agar tetap tampil setelah st.rerun()."""
+    st.session_state.pop("_usage", None)
     st.session_state.pop("_totals", None)  # ada perubahan -> hitung ulang ringkasan di sidebar
     st.session_state.setdefault("_flash", []).append((kind, text))
 
@@ -582,10 +627,12 @@ def balance_panel(settings: Settings, db, user, connected) -> None:
             st.rerun()
 
 
-def folder_picker(db, user, label: str, key: str, exclude: str | None = None) -> str | None:
-    options = [o for o in service.folder_options(db, user.id) if o[0] != exclude]
+def folder_picker(db, user, label: str, key: str, exclude: str | None = None, default: str | None = None) -> str | None:
+    options = [o for o in service.folder_options(db, user.id) if exclude is None or o[0] != exclude]
     labels = {fid: text for fid, text in options}
-    return st.selectbox(label, [fid for fid, _ in options], format_func=lambda x: labels[x], key=key)
+    ids = [fid for fid, _ in options]
+    index = ids.index(default) if default in ids else 0
+    return st.selectbox(label, ids, index=index, format_func=lambda x: labels[x], key=key)
 
 
 SIZE_COLS = {"XS": 6, "SM": 5, "MD": 4, "LG": 3}
@@ -782,7 +829,8 @@ def page_files(settings: Settings, db, user) -> None:
     search = tools[0].text_input(
         "Cari", key="search", placeholder="Cari berkas di semua akun…", label_visibility="collapsed"
     )
-    tools[1].button("Unggah", icon=":material/upload:", type="primary", width="stretch", on_click=go_to, args=("Unggah",))
+    if tools[1].button("Unggah", icon=":material/upload:", type="primary", width="stretch"):
+        upload_dialog(settings, user, folder_id)
     with tools[2].popover("Folder baru", icon=":material/create_new_folder:", width="stretch"):
         nf_name = st.text_input("Nama folder", key="nf_name")
         nf_color, nf_icon = style_pickers("nf", ui.DEFAULT_COLOR, ui.DEFAULT_ICON)
@@ -912,43 +960,82 @@ def page_files(settings: Settings, db, user) -> None:
         st.caption(f"{len(rows)} berkas.")
 
 
-def page_upload(settings: Settings, db, user) -> None:
-    page_header("Unggah", "Kirim berkas ke akun yang paling sesuai.")
-    accounts = service.list_accounts(db, user.id, connected_only=True)
-    if not accounts:
-        st.info("Hubungkan minimal satu akun Google Drive di Pengaturan.")
-        return
+@st.dialog("Unggah berkas", width="large")
+def upload_dialog(settings: Settings, user, folder_id: str | None) -> None:
+    """Unggah dari halaman Berkas. Memakai sesi database sendiri karena dialog dijalankan ulang terpisah."""
+    db = get_session_factory(settings.database_url)()
+    try:
+        accounts = service.list_accounts(db, user.id, connected_only=True)
+        if not accounts:
+            st.info("Hubungkan minimal satu akun di Pengaturan.")
+            return
+        policy = service.get_policy(db, user.id)
+        mode_names = {"most_available": "ruang terbanyak", "round_robin": "bergantian", "priority": "urutan prioritas"}
+        st.caption(f"Akun dipilih otomatis dengan aturan **{mode_names.get(policy.mode, policy.mode)}** (ubah di Kuota).")
+        c = st.columns(2)
+        with c[0]:
+            dest = folder_picker(db, user, "Simpan ke folder", "up_dest", default=folder_id)
+        emails = {a.id: a.email for a in accounts}
+        target = c[1].selectbox(
+            "Akun tujuan",
+            [None] + [a.id for a in accounts],
+            format_func=lambda x: "Otomatis (ikuti aturan)" if x is None else emails[x],
+            key="up_target",
+        )
+        files = st.file_uploader("Pilih berkas", accept_multiple_files=True, key=f"up_files_{st.session_state.get('up_round', 0)}")
+        if not files:
+            return
+        st.write(f"{len(files)} berkas · {fmt_bytes(sum(f.size for f in files))}")
+        if st.button("Mulai unggah", type="primary", key="up_go"):
+            bar = st.progress(0.0, text="Menyiapkan…")
+
+            def on_progress(index: int, total: int, fraction: float) -> None:
+                bar.progress((index + fraction) / total, text=f"Berkas {index + 1} dari {total}")
+
+            items = [(f.name, f.type or "application/octet-stream", f.size, f) for f in files]
+            results = service.upload_batch(db, settings, user.id, items, dest, target, on_progress)
+            bar.empty()
+            for r in results:
+                flash("ok" if r.ok else "err", f"{r.name} → {r.account_email}" if r.ok else f"{r.name}: {r.message}")
+            st.session_state["up_round"] = st.session_state.get("up_round", 0) + 1
+            st.rerun()
+    finally:
+        db.close()
+
+
+ACTION_STYLE = {
+    "Berkas": ("#2447c9", "#e8edfb"),
+    "Berbagi": ("#0e9f8e", "#e2f5f2"),
+    "Akun": ("#8b5cf6", "#efe9fe"),
+}
+ACTIVITY_STEP = 30
+
+
+def page_activity(settings: Settings, db, user) -> None:
+    page_header("Aktivitas", "Jejak unggahan, perpindahan, tautan, dan akun selama 90 hari terakhir.")
     show_flash()
-    policy = service.get_policy(db, user.id)
-    mode_names = {"most_available": "ruang terbanyak", "round_robin": "bergantian", "priority": "urutan prioritas"}
-    st.caption(f"Aturan pemilihan akun: **{mode_names.get(policy.mode, policy.mode)}** (ubah di Pengaturan).")
-    dest = folder_picker(db, user, "Simpan ke folder virtual", "up_dest")
-    emails = {a.id: a.email for a in accounts}
-    target = st.selectbox(
-        "Akun tujuan",
-        [None] + [a.id for a in accounts],
-        format_func=lambda x: "Otomatis (ikuti aturan)" if x is None else emails[x],
-        key="up_target",
-    )
-    files = st.file_uploader("Pilih berkas", accept_multiple_files=True, key=f"up_files_{st.session_state.get('up_round', 0)}")
-    if not files:
+    group = st.segmented_control("Kelompok", list(service.ACTIVITY_GROUPS), default="Semua", key="act_group", label_visibility="collapsed") or "Semua"
+    limit = st.session_state.get("act_limit", ACTIVITY_STEP)
+    if st.session_state.get("_act_sig") != group:
+        st.session_state["_act_sig"] = group
+        limit = st.session_state["act_limit"] = ACTIVITY_STEP
+    rows = service.list_activity(db, user.id, group, limit + 1)
+    more = len(rows) > limit
+    rows = rows[:limit]
+    if not rows:
+        st.info("Belum ada aktivitas. Unggah berkas atau hubungkan akun, nanti riwayatnya muncul di sini.")
         return
-    st.write(f"{len(files)} berkas · {fmt_bytes(sum(f.size for f in files))}")
-    if st.button("Mulai unggah", type="primary"):
-        bar = st.progress(0.0, text="Menyiapkan…")
-
-        def on_progress(index: int, total: int, fraction: float) -> None:
-            bar.progress((index + fraction) / total, text=f"Berkas {index + 1} dari {total}")
-
-        items = [(f.name, f.type or "application/octet-stream", f.size, f) for f in files]
-        results = service.upload_batch(db, settings, user.id, items, dest, target, on_progress)
-        bar.empty()
-        for r in results:
-            if r.ok:
-                flash("ok", f"✅ {r.name} → {r.account_email}")
-            else:
-                flash("err", f"❌ {r.name}: {r.message}")
-        st.session_state["up_round"] = st.session_state.get("up_round", 0) + 1  # kosongkan uploader
+    html_rows = []
+    for act in rows:
+        label, grp = service.ACTIONS.get(act.action, (act.action, "Berkas"))
+        fg, bg = ACTION_STYLE.get(grp, ACTION_STYLE["Berkas"])
+        html_rows.append(
+            f'<div class="act"><span class="act-tag" style="color:{fg};background:{bg}">{esc(label)}</span>'
+            f'<span class="act-detail">{esc(act.detail)}</span><span class="act-time">{esc(fmt_dt(act.created_at))} UTC</span></div>'
+        )
+    st.markdown('<div class="act-list">' + "".join(html_rows) + "</div>", unsafe_allow_html=True)
+    if more and st.button("Tampilkan lebih banyak", key="act_more"):
+        st.session_state["act_limit"] = limit + ACTIVITY_STEP
         st.rerun()
 
 
@@ -1057,7 +1144,7 @@ def page_gallery(settings: Settings, db, user) -> None:
     with card():
         st.markdown("**Buat galeri baru**")
         if not rows:
-            st.info("Belum ada foto. Unggah gambar lewat menu Unggah, lalu kembali ke sini.")
+            st.info("Belum ada foto. Unggah gambar lewat tombol Unggah di Berkas, lalu kembali ke sini.")
         else:
             title = st.text_input("Judul galeri", key="g_title")
             by_id = {f.id: f for f, _ in rows}
@@ -1281,10 +1368,10 @@ def main() -> None:
         {
             "Kuota": page_home,
             "Berkas": page_files,
-            "Unggah": page_upload,
             "Dibagikan": page_shared,
             "Galeri": page_gallery,
             "Sampah": page_trash,
+            "Aktivitas": page_activity,
             "Pengaturan": page_settings,
         }[page](settings, db, user)
 
@@ -1300,12 +1387,14 @@ def main() -> None:
             accounts_all = service.list_accounts(db, user.id)
             totals = service.quota_totals(accounts_all)
         st.session_state["_totals"] = (time.time(), totals)
+        cached_usage = st.session_state.get("_usage")
+        if cached_usage and time.time() - cached_usage[0] < 60:
+            usage = cached_usage[1]
+        else:
+            usage = service.usage_by_kind(db, user.id)
+            st.session_state["_usage"] = (time.time(), usage)
         with st.sidebar:
-            st.markdown(
-                f'<div class="side-storage"><div class="row"><b>{esc(fmt_bytes(totals.used))} terpakai</b>'
-                f'<span>{esc(fmt_bytes(totals.total))}</span></div>{bar_html(totals.used, totals.total)}</div>',
-                unsafe_allow_html=True,
-            )
+            st.markdown(usage_html(usage, totals), unsafe_allow_html=True)
             if st.button("Keluar", icon=":material/logout:", key="logout_btn", width="stretch"):
                 logout()
         if accounts_all is not None:  # kuota basi disegarkan di latar belakang, halaman tidak menunggu

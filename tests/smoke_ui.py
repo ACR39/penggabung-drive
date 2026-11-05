@@ -57,7 +57,7 @@ ok &= check("publik salah", at); assert any("tidak berlaku" in e.value for e in 
 at = AppTest.from_file(APP, default_timeout=30); at.query_params["code"] = "x"; at.query_params["state"] = "palsu"; at.run()
 ok &= check("callback palsu", at)
 # semua halaman setelah masuk
-for page in ["Kuota", "Berkas", "Unggah", "Dibagikan", "Galeri", "Sampah", "Pengaturan"]:
+for page in ["Kuota", "Berkas", "Dibagikan", "Galeri", "Sampah", "Aktivitas", "Pengaturan"]:
     at = AppTest.from_file(APP, default_timeout=30)
     at.session_state["user_id"] = user.id
     at.session_state["menu"] = page
@@ -127,4 +127,18 @@ cb = [c for c in at.checkbox if str(c.key).startswith("sel")]
 if cb:
     cb[0].check().run(); ok &= check("pilih + pindah drive", at)
     assert any(b.key == "mv_drive_go" for b in at.button), "kontrol pindah drive hilang"
+# dialog Unggah di Berkas
+at = AppTest.from_file(APP, default_timeout=30)
+at.session_state["user_id"] = user.id; at.session_state["menu"] = "Berkas"; at.run()
+[b for b in at.button if b.label == "Unggah"][0].click().run(); ok &= check("dialog unggah", at)
+# halaman Aktivitas berisi catatan
+at = AppTest.from_file(APP, default_timeout=30)
+at.session_state["user_id"] = user.id; at.session_state["menu"] = "Aktivitas"; at.run()
+ok &= check("aktivitas berisi", at); assert any("act-tag" in m.value for m in at.markdown), "daftar aktivitas kosong"
+# pilihan folder unggah harus memuat Beranda (akar)
+at = AppTest.from_file(APP, default_timeout=30)
+at.session_state["user_id"] = user.id; at.session_state["menu"] = "Berkas"; at.run()
+[b for b in at.button if b.label == "Unggah"][0].click().run()
+assert any(sb.key == "up_dest" and sb.value is None for sb in at.selectbox), "folder akar tidak tersedia"
+ok &= check("folder akar di dialog", at)
 sys.exit(0 if ok else 1)

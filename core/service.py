@@ -24,6 +24,7 @@ from .crypto import decrypt, encrypt
 from .db import (
     get_session_factory,
     Account,
+    Activity,
     File,
     Folder,
     Gallery,
@@ -1291,3 +1292,166 @@ def balance_plan(
             used[dst.id] += item.size_bytes
             plan.append(PlannedMove(item.id, item.name, item.size_bytes, src.id, dst.id))
     return plan
+
+
+# ---------------------------------------------------------------- Log aktivitas
+
+# aksi -> (label, kelompok)
+ACTIONS: dict[str, tuple[str, str]] = {
+    "file.upload": ("Unggah", "Berkas"),
+    "file.rename": ("Ganti nama", "Berkas"),
+    "file.move": ("Pindah folder", "Berkas"),
+    "file.move_drive": ("Pindah drive", "Berkas"),
+    "file.trash": ("Dibuang", "Berkas"),
+    "file.restore": ("Dipulihkan", "Berkas"),
+    "file.delete": ("Dihapus permanen", "Berkas"),
+    "folder.create": ("Folder dibuat", "Berkas"),
+    "folder.update": ("Folder diubah", "Berkas"),
+    "folder.delete": ("Folder dihapus", "Berkas"),
+    "file.share": ("Tautan dibuat", "Berbagi"),
+    "file.unshare": ("Tautan dimatikan", "Berbagi"),
+    "gallery.create": ("Galeri dibuat", "Berbagi"),
+    "gallery.delete": ("Galeri dihapus", "Berbagi"),
+    "account.connect": ("Akun terhubung", "Akun"),
+    "account.remove": ("Akun dilepas", "Akun"),
+    "import.add": ("Folder diimpor", "Akun"),
+    "import.sync": ("Impor disinkronkan", "Akun"),
+    "import.remove": ("Impor dilepas", "Akun"),
+}
+ACTIVITY_GROUPS = ("Semua", "Berkas", "Berbagi", "Akun")
+ACTIVITY_KEEP_DAYS = 90
+
+
+def log_activity(db: Session, user_id: str, action: str, detail: str = "") -> None:
+    """Catat satu aktivitas. Tidak pernah menggagalkan aksi yang sedang berjalan."""
+    try:
+        db.add(Activity(user_id=user_id, action=action, detail=(detail or "")[:500]))
+        db.commit()
+        if secrets.randbelow(50) == 0:  # sesekali bersihkan catatan lama
+            from sqlalchemy import delete
+
+            db.execute(
+                delete(Activity).where(Activity.user_id == user_id, Activity.created_at < utcnow() - timedelta(days=ACTIVITY_KEEP_DAYS))
+            )
+            db.commit()
+    except Exception:
+        db.rollback()
+
+
+def list_activity(db: Session, user_id: str, group: str = "Semua", limit: int = 30, offset: int = 0) -> list[Activity]:
+    query = select(Activity).where(Activity.user_id == user_id)
+    if group != "Semua":
+        names = [a for a, (_, g) in ACTIONS.items() if g == group]
+        query = query.where(Activity.action.in_(names))
+    return list(db.scalars(query.order_by(Activity.created_at.desc()).offset(offset).limit(limit)))
+
+
+def _file_names(db: Session, ids) -> str:
+    names = [f.name for f in (db.get(File, i) for i in ids) if f is not None]
+    if not names:
+        return ""
+    shown = ", ".join(names[:3])
+    return shown + (f" dan {len(names) - 3} lainnya" if len(names) > 3 else "")
+
+
+def _install_audit() -> None:
+    """Bungkus fungsi layanan agar tiap aksi tercatat, tanpa mengubah isi fungsinya."""
+    import functools
+    import inspect
+
+    def audit(name, action, before=None, detail=None):
+        fn = globals()[name]
+        sig = inspect.signature(fn)
+
+        @functools.wraps(fn)
+        def inner(*args, **kwargs):
+            bound = sig.bind(*args, **kwargs)
+            bound.apply_defaults()
+            arg = bound.arguments
+            db = arg["db"]
+            try:
+                ctx = before(db, arg) if before else None
+            except Exception:
+                ctx = None
+            result = fn(*args, **kwargs)
+            try:
+                user_id = arg["user_id"] if "user_id" in arg else arg["user"].id
+                text = detail(db, arg, ctx, result) if detail else ""
+                for line in ([text] if isinstance(text, str) else text):
+                    if line is not None:
+                        log_activity(db, user_id, action, line)
+            except Exception:
+                pass
+            return result
+
+        globals()[name] = inner
+
+    def fname(db, arg):
+        item = db.get(File, arg["file_id"])
+        return item.name if item else ""
+
+    audit("create_folder", "folder.create", detail=lambda db, a, c, r: r.name)
+    audit("update_folder", "folder.update", detail=lambda db, a, c, r: getattr(r, "name", ""))
+    audit("delete_folder", "folder.delete", before=lambda db, a: (db.get(Folder, a["folder_id"]) or Folder(name="")).name, detail=lambda db, a, c, r: c)
+    audit("rename_file", "file.rename", before=fname, detail=lambda db, a, c, r: f"{c} → {a['new_name']}")
+    audit("trash_files", "file.trash", before=lambda db, a: _file_names(db, a["file_ids"]), detail=lambda db, a, c, r: c if r else None)
+    audit("restore_files", "file.restore", before=lambda db, a: _file_names(db, a["file_ids"]), detail=lambda db, a, c, r: c if r else None)
+    audit("delete_forever", "file.delete", before=lambda db, a: _file_names(db, a["file_ids"]), detail=lambda db, a, c, r: c)
+    audit(
+        "move_files",
+        "file.move",
+        before=lambda db, a: _file_names(db, a["file_ids"]),
+        detail=lambda db, a, c, r: f"{c} → {(db.get(Folder, a['folder_id']).name if a['folder_id'] else 'Beranda')}" if r else None,
+    )
+    audit("create_share", "file.share", detail=lambda db, a, c, r: (db.get(File, a["file_id"]) or File(name="")).name)
+    audit(
+        "disable_share",
+        "file.unshare",
+        before=lambda db, a: (lambda sh: db.get(File, sh.file_id).name if sh else "")(db.get(Share, a["share_id"])),
+        detail=lambda db, a, c, r: c,
+    )
+    audit("create_gallery", "gallery.create", detail=lambda db, a, c, r: f"{r.title} ({len(r.items)} foto)")
+    audit("delete_gallery", "gallery.delete", before=lambda db, a: (db.get(Gallery, a["gallery_id"]) or Gallery(title="")).title, detail=lambda db, a, c, r: c)
+    audit("upsert_account", "account.connect", detail=lambda db, a, c, r: f"{r.email} ({'Yandex' if r.provider == 'yandex' else 'Google'})")
+    audit("remove_account", "account.remove", before=lambda db, a: (db.get(Account, a["account_id"]) or Account(email="")).email, detail=lambda db, a, c, r: c)
+    audit("add_import_source", "import.add", detail=lambda db, a, c, r: r.name)
+    audit("remove_import_source", "import.remove", before=lambda db, a: (db.get(ImportSource, a["source_id"]) or ImportSource(name="")).name, detail=lambda db, a, c, r: f"{c} ({r} catatan)")
+    audit(
+        "sync_import_source",
+        "import.sync",
+        before=lambda db, a: (db.get(ImportSource, a["source_id"]) or ImportSource(name="")).name,
+        detail=lambda db, a, c, r: f"{c}: {r['dibuat']} baru, {r['dihapus']} hilang" if (r["dibuat"] or r["dihapus"]) else None,
+    )
+    audit(
+        "move_to_account",
+        "file.move_drive",
+        before=lambda db, a: (db.get(Account, a["target_id"]) or Account(email="")).email,
+        detail=lambda db, a, c, r: f"{r[0]} berkas → {c}" if r[0] else None,
+    )
+    audit(
+        "upload_batch",
+        "file.upload",
+        detail=lambda db, a, c, r: [f"{x.name} → {x.account_email}" for x in r if x.ok],
+    )
+
+
+_install_audit()
+
+
+# ---------------------------------------------------------------- Penggunaan per jenis
+
+USAGE_KINDS = (("foto", "Foto"), ("video", "Video"), ("dokumen", "Dokumen"), ("lainnya", "Lainnya"))
+_KIND_TO_USAGE = {"image": "foto", "video": "video", "pdf": "dokumen", "doc": "dokumen", "sheet": "dokumen", "code": "dokumen"}
+
+
+def usage_by_kind(db: Session, user_id: str) -> dict[str, int]:
+    """Jumlah byte berkas aktif yang tercatat di aplikasi, dikelompokkan jadi foto/video/dokumen/lainnya."""
+    from .ui_assets import file_kind
+
+    sums = {key: 0 for key, _ in USAGE_KINDS}
+    rows = db.execute(
+        select(File.mime_type, File.name, File.size_bytes).where(File.user_id == user_id, File.status == "active")
+    )
+    for mime, name, size in rows:
+        sums[_KIND_TO_USAGE.get(file_kind(mime, name), "lainnya")] += size or 0
+    return sums

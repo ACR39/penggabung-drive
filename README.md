@@ -146,3 +146,11 @@ Melepas folder hanya menghapus catatannya di aplikasi. Fitur ini khusus akun Goo
 - Urutannya: unduh dari asal, unggah ke tujuan, simpan catatan baru, baru hapus dari asal. Bila unggahan gagal,
   berkas asal tidak disentuh. Dokumen Google (Docs/Sheets), berkas kosong, dan berkas di atas `MAX_DOWNLOAD_MB`
   tidak dipindah. Berkas lewat memori server, jadi pindahkan sedikit demi sedikit.
+
+## Aktivitas, unggah di Berkas, rincian penyimpanan
+
+- **Aktivitas:** menu baru yang mencatat unggahan, ganti nama, pindah folder/drive, buang/pulihkan/hapus, tautan dan galeri,
+  serta akun yang dihubungkan atau dilepas. Bisa disaring per kelompok. Catatan disimpan 90 hari.
+- **Unggah** kini jendela di halaman Berkas (folder tujuan mengikuti folder yang sedang dibuka), tidak lagi menu sendiri.
+- **Sidebar:** rincian ruang per jenis (Foto, Video, Dokumen, Lainnya, Kosong). Angka Foto/Video/Dokumen dihitung dari berkas yang
+  tercatat di aplikasi. "Lainnya" juga memuat pemakaian di luar aplikasi (berkas lain di Drive, Gmail, Google Foto).

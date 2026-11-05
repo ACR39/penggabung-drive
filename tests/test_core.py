@@ -836,3 +836,39 @@ def test_balance_plan_moves_largest_from_full_to_roomy(env):
     assert [(p.name, p.to_id) for p in plan] == [("b", y.id)]  # satu pemindahan sudah cukup (95-30=65)
     assert service.balance_plan([x, y], files, 10**9, 0.97, 0.8) == []  # belum melewati batas
     assert service.balance_plan([x, y], files, 4, 0.9, 0.8) == []  # berkas lebih besar dari batas unduh
+
+
+# ------------------------------------------------------------ log aktivitas + penggunaan
+
+
+def test_activity_log_records_actions(env, monkeypatch):
+    db, settings, user, accounts, store = env
+    a0, a1 = accounts
+    monkeypatch.setattr(service.drive, "download_bytes", lambda *a: (b"x", "f", "text/plain"))
+    monkeypatch.setattr(service.drive, "rename_file", lambda *a: None)
+    results = service.upload_batch(db, settings, user.id, [("a.txt", "text/plain", 1, io.BytesIO(b"x"))], None, None)
+    assert results[0].ok
+    f = db.query(File).filter_by(name="a.txt").one()
+    folder = service.create_folder(db, user.id, None, "Arsip")
+    service.move_files(db, user.id, [f.id], folder.id)
+    service.rename_file(db, settings, user.id, f.id, "b.txt")
+    service.create_share(db, user.id, f.id, 7)
+    service.trash_files(db, user.id, [f.id])
+    service.restore_files(db, user.id, [f.id])
+    service.move_to_account(db, settings, user.id, [f.id], a1.id if f.account_id == a0.id else a0.id)
+    got = {a.action: a.detail for a in service.list_activity(db, user.id, limit=50)}
+    for key in ["file.upload", "folder.create", "file.move", "file.rename", "file.share", "file.trash", "file.restore", "file.move_drive"]:
+        assert key in got, key
+    assert "a.txt" in got["file.upload"] and "Arsip" in got["file.move"]
+    assert service.list_activity(db, user.id, "Berbagi", 50)[0].action == "file.share"
+    assert all(a.user_id == user.id for a in service.list_activity(db, user.id))
+
+
+def test_usage_by_kind_groups_files(env):
+    db, user, acc = env[0], env[2], env[3][0]
+    for name, mime, size in [("a.png", "image/png", 10), ("b.mp4", "video/mp4", 20), ("c.pdf", "application/pdf", 5), ("d.zip", "application/zip", 7)]:
+        _file(db, user, acc, name, size, mime)
+    trashed = _file(db, user, acc, "e.png", 99, "image/png")
+    trashed.status = "trashed"
+    db.commit()
+    assert service.usage_by_kind(db, user.id) == {"foto": 10, "video": 20, "dokumen": 5, "lainnya": 7}
