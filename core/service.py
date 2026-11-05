@@ -6,6 +6,7 @@ sehingga aman dipakai dari Streamlit (yang bisa menghentikan skrip kapan saja).
 from __future__ import annotations
 
 import io
+import re
 import secrets
 import threading
 import time
@@ -790,12 +791,31 @@ def download_file(db: Session, settings: Settings, item: File) -> tuple[bytes, s
 # ---------------------------------------------------------------- Berbagi
 
 
+SLUG_RE = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
+SLUG_MIN, SLUG_MAX = 3, 40
+
+
+def clean_slug(slug: Optional[str]) -> Optional[str]:
+    """Nama tautan kustom: huruf kecil, angka, tanda hubung. Kosong berarti tautan acak."""
+    slug = (slug or "").strip().lower()
+    if not slug:
+        return None
+    if not SLUG_MIN <= len(slug) <= SLUG_MAX:
+        raise AppError(f"Nama tautan harus {SLUG_MIN}–{SLUG_MAX} karakter.")
+    if not SLUG_RE.match(slug):
+        raise AppError("Nama tautan hanya boleh huruf kecil, angka, dan tanda hubung (tidak di awal atau akhir).")
+    return slug
+
+
 def create_share(
-    db: Session, user_id: str, file_id: str, days: Optional[int]
+    db: Session, user_id: str, file_id: str, days: Optional[int], slug: Optional[str] = None
 ) -> Share:
     files = [f for f in _owned_files(db, user_id, [file_id]) if f.status == "active"]
     if not files:
         raise AppError("File tidak ditemukan.")
+    slug = clean_slug(slug)
+    if slug and db.scalar(select(Share).where(Share.token == slug, Share.file_id != file_id)) is not None:
+        raise AppError("Nama tautan itu sudah dipakai. Pilih yang lain.")
     expires = None if days is None else utcnow() + timedelta(days=days)
     current = [
         sh
@@ -805,6 +825,8 @@ def create_share(
     if current:  # satu berkas cukup satu tautan aktif: pakai ulang, perbarui masa berlakunya
         share = current[0]
         share.expires_at = expires
+        if slug and share.token != slug:
+            share.token = slug
         for extra in current[1:]:
             extra.enabled = False
         db.commit()
@@ -812,7 +834,7 @@ def create_share(
     share = Share(
         file_id=file_id,
         user_id=user_id,
-        token=secrets.token_urlsafe(24),
+        token=slug or secrets.token_urlsafe(24),
         expires_at=expires,
     )
     db.add(share)
@@ -879,6 +901,7 @@ def create_gallery(
     file_ids: Sequence[str],
     days: Optional[int],
     download_mode: str = "none",
+    slug: Optional[str] = None,
 ) -> Gallery:
     title = (title or "").strip()
     if not title:
@@ -887,6 +910,9 @@ def create_gallery(
         download_mode = "small"
     if download_mode not in DOWNLOAD_MODES:
         raise AppError("Pilihan unduhan tidak dikenal.")
+    slug = clean_slug(slug)
+    if slug and db.scalar(select(Gallery).where(Gallery.token == slug)) is not None:
+        raise AppError("Nama tautan itu sudah dipakai. Pilih yang lain.")
     files = [f for f in _owned_files(db, user_id, list(dict.fromkeys(file_ids))) if f.status == "active" and is_image(f)]
     if not files:
         raise AppError("Pilih minimal satu berkas gambar.")
@@ -896,7 +922,7 @@ def create_gallery(
     files.sort(key=lambda f: order.get(f.id, 0))
     gallery = Gallery(
         user_id=user_id,
-        token=secrets.token_urlsafe(18),
+        token=slug or secrets.token_urlsafe(18),
         title=title[:191],
         download_mode=download_mode,
         allow_download=download_mode != "none",

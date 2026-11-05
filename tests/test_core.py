@@ -932,3 +932,38 @@ def test_gallery_zip_modes_limits_and_duplicate_names(env, monkeypatch):
     data, name, failed = service.gallery_zip(settings, small.id)  # mode kecil tidak kena batas ukuran asli
     with zipfile.ZipFile(io.BytesIO(data)) as z:
         assert z.namelist() == ["foto.jpg"]
+
+
+# ------------------------------------------------------------ nama tautan kustom
+
+
+def test_clean_slug_rules():
+    assert service.clean_slug("  Liburan-Bali ") == "liburan-bali"
+    assert service.clean_slug("") is None and service.clean_slug(None) is None
+    for bad in ["ab", "x" * 41, "ada spasi", "-awal", "akhir-", "dobel--tanda", "gar/is", "ünicode", "a_b_c"]:
+        with pytest.raises(service.AppError):
+            service.clean_slug(bad)
+
+
+def test_gallery_custom_slug_unique(env):
+    db, user, acc = env[0], env[2], env[3][0]
+    f = _file(db, user, acc, "p.png", 10, "image/png")
+    g = service.create_gallery(db, user.id, "Bali", [f.id], None, "none", "Liburan-Bali")
+    assert g.token == "liburan-bali" and service.resolve_gallery(db, "liburan-bali")
+    with pytest.raises(service.AppError):
+        service.create_gallery(db, user.id, "Lagi", [f.id], None, "none", "liburan-bali")
+    random_one = service.create_gallery(db, user.id, "Acak", [f.id], None, "none")
+    assert len(random_one.token) > 20
+
+
+def test_share_custom_slug_and_rename_existing(env):
+    db, user, acc = env[0], env[2], env[3][0]
+    f1 = _file(db, user, acc, "a.png", 1, "image/png")
+    f2 = _file(db, user, acc, "b.png", 1, "image/png")
+    s1 = service.create_share(db, user.id, f1.id, 7, "laporan-2026")
+    assert s1.token == "laporan-2026"
+    with pytest.raises(service.AppError):
+        service.create_share(db, user.id, f2.id, 7, "laporan-2026")  # dipakai berkas lain
+    again = service.create_share(db, user.id, f1.id, 7, "laporan-baru")  # berkas sama: nama diganti, tetap satu tautan
+    assert again.id == s1.id and again.token == "laporan-baru"
+    assert service.resolve_public_share(db, "laporan-2026") is None

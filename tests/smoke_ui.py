@@ -145,4 +145,11 @@ ok &= check("folder akar di dialog", at)
 at = AppTest.from_file(APP, default_timeout=60); at.query_params["g"] = gal2.token; at.run()
 assert any(b.key == "dl_all" for b in at.button), "tombol unduh semua hilang"
 ok &= check("tombol unduh semua", at)
+# formulir nama tautan kustom
+at = AppTest.from_file(APP, default_timeout=30)
+at.session_state["user_id"] = user.id; at.session_state["menu"] = "Galeri"; at.run()
+at.text_input(key="g_title").set_value("Kustom"); at.multiselect(key="g_files").set_value([img.id]).run()
+at.text_input(key="g_slug").set_value("kustom-uji").run()
+at.button(key="g_make").click().run(); ok &= check("galeri slug kustom", at)
+assert service.resolve_gallery(db, "kustom-uji"), "galeri dengan nama kustom tidak terbentuk"
 sys.exit(0 if ok else 1)

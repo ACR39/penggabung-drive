@@ -161,3 +161,10 @@ Melepas folder hanya menghapus catatannya di aplikasi. Fitur ini khusus akun Goo
   Saat diperbesar, foto tetap proporsional.
 - Tombol **Unduh semua (ZIP)** muncul di galeri publik bila mode unduh bukan "tanpa unduhan". Isi ZIP mengikuti mode (ukuran kecil atau
   berkas asli). Mode berkas asli dibatasi total `MAX_DOWNLOAD_MB`. Nama kembar diberi nomor.
+
+## Nama tautan kustom
+
+Saat membuat galeri atau tautan berbagi, kolom **Nama tautan (opsional)** membuat alamat seperti `?g=liburan-bali` atau `?s=laporan-2026`.
+Aturan: huruf kecil, angka, tanda hubung, 3–40 karakter, unik. Dikosongkan = kode acak. Mengisi nama baru pada berkas yang sudah punya
+tautan aktif mengganti nama tautan lama (link lama berhenti berlaku). Nama kustom lebih mudah ditebak, jadi pakai untuk konten yang
+memang boleh diketahui banyak orang. Bentuk `/liburan-bali` tanpa tanda tanya butuh domain sendiri dengan aturan pengalihan di Cloudflare.

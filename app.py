@@ -776,9 +776,13 @@ def selection_bar(settings: Settings, db, user, picked) -> None:
                     st.error(str(exc))
         with c3:
             label = st.selectbox("Masa berlaku tautan", list(service.EXPIRY_CHOICES), key=f"exp_{item.id}")
+            st.text_input(
+                "Nama tautan (opsional)", key=f"slug_{item.id}", placeholder="mis. laporan-2026",
+                help="Huruf kecil, angka, dan tanda hubung. Kosongkan untuk kode acak. Nama kustom lebih mudah ditebak orang.",
+            )
             if st.button("Buat tautan berbagi", icon=":material/link:"):
                 try:
-                    share = service.create_share(db, user.id, item.id, service.EXPIRY_CHOICES[label])
+                    share = service.create_share(db, user.id, item.id, service.EXPIRY_CHOICES[label], st.session_state.get(f"slug_{item.id}"))
                     st.session_state["new_share"] = share.token
                 except AppError as exc:
                     st.error(str(exc))
@@ -1172,9 +1176,15 @@ def page_gallery(settings: Settings, db, user) -> None:
             label = c1.selectbox("Masa berlaku", list(service.EXPIRY_CHOICES), key="g_exp")
             dl_labels = {"none": "Tanpa unduhan", "small": "Unduh ukuran kecil (JPEG)", "original": "Unduh berkas asli"}
             mode = c2.selectbox("Unduhan untuk pengunjung", list(dl_labels), format_func=dl_labels.get, key="g_dl")
+            slug = st.text_input(
+                "Nama tautan (opsional)", key="g_slug", placeholder="mis. liburan-bali",
+                help="Huruf kecil, angka, dan tanda hubung. Kosongkan untuk kode acak. Nama kustom lebih mudah ditebak orang.",
+            )
+            if slug.strip():
+                st.caption(f"Tautan: {settings.app_url}/?g={slug.strip().lower()}")
             if st.button("Buat galeri", type="primary", key="g_make"):
                 try:
-                    gallery = service.create_gallery(db, user.id, title, picked, service.EXPIRY_CHOICES[label], mode)
+                    gallery = service.create_gallery(db, user.id, title, picked, service.EXPIRY_CHOICES[label], mode, slug)
                     flash("ok", f"Galeri “{gallery.title}” dibuat.")
                 except AppError as exc:
                     flash("err", str(exc))
