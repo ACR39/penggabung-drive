@@ -744,3 +744,16 @@ def test_import_rejects_yandex_account(env):
     db.commit()
     with pytest.raises(service.AppError):
         service.add_import_source(db, user.id, accounts[0].id, "F1", "x")
+
+
+def test_create_share_reuses_active_link(env):
+    db, user, acc = env[0], env[2], env[3][0]
+    f = File(user_id=user.id, account_id=acc.id, drive_file_id="s1", name="x.png", size_bytes=1)
+    db.add(f)
+    db.commit()
+    a = service.create_share(db, user.id, f.id, 7)
+    b = service.create_share(db, user.id, f.id, None)
+    assert a.id == b.id and b.expires_at is None  # tautan sama, masa berlaku diperbarui
+    service.disable_share(db, user.id, a.id)
+    c = service.create_share(db, user.id, f.id, 7)
+    assert c.id != a.id  # setelah dimatikan, tautan baru dibuat

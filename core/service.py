@@ -795,11 +795,24 @@ def create_share(
     files = [f for f in _owned_files(db, user_id, [file_id]) if f.status == "active"]
     if not files:
         raise AppError("File tidak ditemukan.")
+    expires = None if days is None else utcnow() + timedelta(days=days)
+    current = [
+        sh
+        for sh in db.scalars(select(Share).where(Share.file_id == file_id, Share.enabled.is_(True)))
+        if sh.expires_at is None or sh.expires_at > utcnow()
+    ]
+    if current:  # satu berkas cukup satu tautan aktif: pakai ulang, perbarui masa berlakunya
+        share = current[0]
+        share.expires_at = expires
+        for extra in current[1:]:
+            extra.enabled = False
+        db.commit()
+        return share
     share = Share(
         file_id=file_id,
         user_id=user_id,
         token=secrets.token_urlsafe(24),
-        expires_at=None if days is None else utcnow() + timedelta(days=days),
+        expires_at=expires,
     )
     db.add(share)
     db.commit()
