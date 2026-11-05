@@ -26,79 +26,110 @@ st.set_page_config(page_title="Penggabung Drive", page_icon="🗂️", layout="w
 
 CSS = """
 <style>
-.stApp { background:linear-gradient(180deg,#f8f9fe 0%,#f2f3fa 100%); }
+:root { --ink:#0f172a; --muted:#64748b; --line:#e2e8f0; --canvas:#f6f7f9; --accent:#2447c9; --accent-soft:#e8edfb; }
+.stApp { background:var(--canvas); }
 header[data-testid="stHeader"] { background:transparent; }
 .stAppDeployButton, footer { display:none !important; }
-.block-container { padding-top:2.2rem; max-width:1180px; }
+.block-container { padding-top:2rem; max-width:1180px; }
+h1, h2, h3 { letter-spacing:-.01em; }
 
 /* sidebar */
-[data-testid="stSidebar"] { background:#fff; border-right:1px solid #eceef6; }
-[data-testid="stSidebar"] [role="radiogroup"] { gap:.2rem; }
-[data-testid="stSidebar"] [role="radiogroup"] label { padding:.6rem .9rem; border-radius:12px; width:100%; cursor:pointer; }
-[data-testid="stSidebar"] [role="radiogroup"] label:hover { background:#f3f4fb; }
+[data-testid="stSidebar"] { background:#fff; border-right:1px solid var(--line); }
+[data-testid="stSidebar"] [role="radiogroup"] { gap:.15rem; }
+[data-testid="stSidebar"] [role="radiogroup"] label { padding:.5rem .8rem; border-radius:8px; width:100%; cursor:pointer; }
+[data-testid="stSidebar"] [role="radiogroup"] label:hover { background:#f1f5f9; }
 [data-testid="stSidebar"] [data-testid="stRadioOption"] > div > div:first-child { display:none; }
-[data-testid="stSidebar"] [role="radiogroup"] label:has(input:checked) { background:#e0e7ff; }
-[data-testid="stSidebar"] [role="radiogroup"] label:has(input:checked) p { color:#4338ca; font-weight:600; }
-.brand { display:flex; align-items:center; gap:.7rem; font-weight:700; font-size:1.2rem; color:#111827; margin:.2rem 0 1.1rem; }
-.logo { width:38px; height:38px; border-radius:12px; background:linear-gradient(135deg,#818cf8,#4f46e5); display:grid; place-items:center; box-shadow:0 6px 14px rgba(79,70,229,.35); }
-.userbox { display:flex; align-items:center; gap:.7rem; padding:.6rem 0 1rem; border-bottom:1px solid #eceef6; margin-bottom:.9rem; }
-.avatar { width:38px; height:38px; border-radius:50%; background:#e0e7ff; color:#4338ca; display:grid; place-items:center; font-weight:700; }
-.u-name { font-weight:600; color:#111827; font-size:.95rem; line-height:1.2; }
-.u-mail { color:#6b7280; font-size:.8rem; word-break:break-all; }
-.side-storage { margin-top:1.2rem; padding-top:1rem; border-top:1px solid #eceef6; }
-.side-storage .row { display:flex; justify-content:space-between; font-size:.85rem; color:#374151; margin-bottom:.45rem; }
+[data-testid="stSidebar"] [role="radiogroup"] label:has(input:checked) { background:var(--accent-soft); }
+[data-testid="stSidebar"] [role="radiogroup"] label:has(input:checked) p { color:var(--accent); font-weight:600; }
+.brand { display:flex; align-items:center; gap:.65rem; font-weight:650; font-size:1.1rem; color:var(--ink); margin:.2rem 0 1.1rem; }
+.logo { width:32px; height:32px; border-radius:8px; background:var(--accent); display:grid; place-items:center; }
+.userbox { display:flex; align-items:center; gap:.65rem; padding:.5rem 0 1rem; border-bottom:1px solid var(--line); margin-bottom:.9rem; }
+.avatar { width:34px; height:34px; border-radius:50%; background:var(--accent-soft); color:var(--accent); display:grid; place-items:center; font-weight:650; }
+.u-name { font-weight:600; color:var(--ink); font-size:.93rem; line-height:1.2; }
+.u-mail { color:var(--muted); font-size:.8rem; word-break:break-all; }
+.side-storage { margin-top:1.2rem; padding-top:1rem; border-top:1px solid var(--line); }
+.side-storage .row { display:flex; justify-content:space-between; font-size:.84rem; color:#334155; margin-bottom:.45rem; }
 
-/* kartu & tombol */
-[data-testid="stVerticalBlockBorderWrapper"] { border-radius:16px; border:1px solid #eceef6; background:#fff !important; box-shadow:0 4px 18px rgba(30,41,90,.05); }
-.stButton > button, .stDownloadButton > button, [data-testid="stBaseLinkButton-secondary"], [data-testid="stBaseLinkButton-primary"] { border-radius:12px; font-weight:500; }
-.stButton > button[kind="secondary"], .stDownloadButton > button[kind="secondary"] { border:1px solid #e5e7f2; background:#fff; box-shadow:0 1px 2px rgba(30,41,90,.06); }
-[data-testid="stBaseButton-primary"], [data-testid="stBaseLinkButton-primary"] { box-shadow:0 8px 18px rgba(79,70,229,.30); }
-[data-baseweb="input"], [data-baseweb="select"] > div, [data-baseweb="base-input"] { border-radius:12px !important; }
+/* kartu, tombol, kolom isian: datar, garis tipis, sudut kecil */
+[class*="st-key-card_"] { border-radius:10px !important; border:1px solid var(--line) !important; background:#fff !important; box-shadow:none; }
+.stButton > button, .stDownloadButton > button, [data-testid="stBaseLinkButton-secondary"], [data-testid="stBaseLinkButton-primary"] { border-radius:8px; font-weight:500; box-shadow:none; }
+.stButton > button[kind="secondary"], .stDownloadButton > button[kind="secondary"] { border:1px solid var(--line); background:#fff; }
+.stButton > button[kind="secondary"]:hover { border-color:#cbd5e1; background:#f8fafc; color:var(--ink); }
+.stButton > button[kind="tertiary"] { color:var(--accent); padding-left:.2rem; padding-right:.4rem; }
+.stButton > button[kind="tertiary"]:hover { background:var(--accent-soft); color:var(--accent); }
+[data-baseweb="input"], [data-baseweb="select"] > div, [data-baseweb="base-input"] { border-radius:8px !important; }
+[data-testid="stButtonGroup"] button { border-radius:8px; }
 
-/* judul, statistik, akun */
-.page-title { font-size:2rem; font-weight:700; color:#111827; line-height:1.15; }
-.page-sub { color:#6b7280; margin:.25rem 0 1.1rem; }
-.stat-grid { display:grid; grid-template-columns:repeat(4,1fr); gap:1rem; margin:.4rem 0 1.4rem; }
-.stat { background:#fff; border-radius:16px; padding:1rem 1.25rem; border:1px solid #f0f1f8; box-shadow:0 4px 18px rgba(30,41,90,.06); }
-.stat .l { color:#6b7280; font-size:.88rem; }
-.stat .v { font-size:1.65rem; font-weight:700; color:#111827; margin-top:.25rem; }
-.acc-grid { display:grid; grid-template-columns:repeat(2,1fr); gap:1rem; margin-top:.6rem; }
-.acc { background:#fff; border-radius:16px; padding:1.1rem 1.25rem; border:1px solid #f0f1f8; box-shadow:0 4px 18px rgba(30,41,90,.06); }
-.acc-top { display:flex; align-items:center; gap:.75rem; margin-bottom:.9rem; }
-.acc-ico { width:40px; height:40px; border-radius:12px; background:linear-gradient(135deg,#818cf8,#4f46e5); color:#fff; display:grid; place-items:center; font-size:1.1rem; flex:none; }
-.acc-name { font-weight:600; color:#111827; word-break:break-all; }
-.acc-sub { color:#6b7280; font-size:.84rem; }
+/* judul */
+.page-title { font-size:1.55rem; font-weight:650; color:var(--ink); line-height:1.2; letter-spacing:-.01em; }
+.page-sub { color:var(--muted); margin:.3rem 0 1.2rem; font-size:.95rem; }
+
+/* kapasitas gabungan (halaman Kuota) */
+.cap { background:#fff; border:1px solid var(--line); border-radius:10px; padding:1.25rem 1.4rem 1.1rem; margin:.4rem 0 1.2rem; }
+.cap-head { display:flex; justify-content:space-between; align-items:baseline; gap:1rem; flex-wrap:wrap; margin-bottom:.9rem; }
+.cap-big { font-size:1.75rem; font-weight:650; color:var(--ink); letter-spacing:-.02em; }
+.cap-of { color:var(--muted); margin-left:.45rem; font-size:.95rem; }
+.cap-free { color:#334155; font-size:.95rem; }
+.cap-bar { display:flex; gap:2px; height:12px; border-radius:6px; overflow:hidden; background:#eaeef3; }
+.cap-bar > span { display:block; height:100%; }
+.cap-legend { display:flex; flex-wrap:wrap; gap:.5rem 1.4rem; margin-top:.95rem; font-size:.86rem; color:#334155; }
+.cap-legend .dot { display:inline-block; width:9px; height:9px; border-radius:50%; margin-right:.45rem; }
+.cap-legend small { color:var(--muted); margin-left:.35rem; }
+
+/* kartu akun */
+.acc-grid { display:grid; grid-template-columns:repeat(2,1fr); gap:.9rem; margin-top:.6rem; }
+.acc { background:#fff; border-radius:10px; padding:1rem 1.15rem; border:1px solid var(--line); }
+.acc-top { display:flex; align-items:center; gap:.75rem; margin-bottom:.85rem; }
+.acc-ico { width:34px; height:34px; border-radius:8px; display:grid; place-items:center; font-size:.9rem; font-weight:650; flex:none; }
+.acc-name { font-weight:600; color:var(--ink); word-break:break-all; }
+.acc-sub { color:var(--muted); font-size:.84rem; }
 .acc-top .chip { margin-left:auto; flex:none; }
-.bar { height:8px; border-radius:999px; background:#eef0f8; overflow:hidden; margin:.2rem 0 .55rem; }
-.bar > span { display:block; height:100%; border-radius:999px; background:linear-gradient(90deg,#818cf8,#4f46e5); }
-.bar.warn > span { background:linear-gradient(90deg,#f59e0b,#ef4444); }
-.chip { display:inline-block; padding:.15rem .6rem; border-radius:999px; font-size:.76rem; font-weight:500; background:#dcfce7; color:#166534; }
-.chip.warn { background:#fee2e2; color:#991b1b; }
-.row-name { font-weight:600; color:#111827; word-break:break-all; }
-.login-card { background:#fff; border:1px solid #eceef6; border-radius:20px; padding:2.2rem 2rem 1.6rem; box-shadow:0 12px 40px rgba(30,41,90,.10); margin-top:3rem; }
-.fold { text-align:center; padding:.5rem .2rem .1rem; }
-.fold-ico { display:grid; place-items:center; height:64px; }
-.fold-name { font-weight:600; color:#111827; margin-top:.45rem; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.fold-sub { color:#6b7280; font-size:.8rem; margin-bottom:.45rem; }
-.fcard { text-align:center; padding:.1rem .1rem .3rem; }
-.ftype { width:58px; height:58px; border-radius:16px; display:grid; place-items:center; margin:.2rem auto .65rem; box-shadow:0 6px 14px rgba(30,41,90,.14); }
-.fname { font-weight:600; color:#111827; font-size:.92rem; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.fstar { color:#f59e0b; margin-left:.3rem; }
-.fsub { color:#6b7280; font-size:.78rem; margin:.15rem 0 .55rem; }
-.fchips { display:flex; flex-direction:column; align-items:center; gap:.3rem; }
-.fchip { background:#f1f3fb; color:#374151; border-radius:999px; padding:.12rem .65rem; font-size:.78rem; max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.bar { height:6px; border-radius:3px; background:#eaeef3; overflow:hidden; margin:.2rem 0 .55rem; }
+.bar > span { display:block; height:100%; border-radius:3px; background:var(--accent); }
+.bar.warn > span { background:#c2410c; }
+.chip { display:inline-block; padding:.12rem .55rem; border-radius:6px; font-size:.76rem; font-weight:500; background:#e7f5ec; color:#166534; }
+.chip.warn { background:#fdeaea; color:#991b1b; }
+.row-name { font-weight:600; color:var(--ink); word-break:break-all; }
+.login-card { background:#fff; border:1px solid var(--line); border-radius:10px; padding:2rem; margin-top:3rem; }
+
+/* folder dan berkas */
+.fold { display:flex; align-items:center; gap:.8rem; padding:.2rem .1rem .1rem; }
+.fold svg { flex:none; }
+.fold-name { font-weight:600; color:var(--ink); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.fold-sub { color:var(--muted); font-size:.8rem; }
+.fold > div { min-width:0; }
+.fcard { padding:.15rem .1rem .2rem; }
+.ftype { width:40px; height:40px; border-radius:10px; display:grid; place-items:center; margin:.1rem 0 .8rem; }
+.fname { font-weight:600; color:var(--ink); font-size:.92rem; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.fstar { color:#d97706; margin-left:.3rem; }
+.fsub { color:var(--muted); font-size:.8rem; margin:.15rem 0 .6rem; }
+.fchip { display:inline-block; background:#f1f5f9; color:#334155; border-radius:6px; padding:.1rem .5rem; font-size:.76rem; max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; vertical-align:top; }
+[class*="st-key-card_"]:has(.fcard) { position:relative; }
+[class*="st-key-card_"]:has(.fcard) [data-testid="stElementContainer"]:has([data-testid="stCheckbox"]) { position:absolute; top:.7rem; right:.7rem; width:auto; height:auto; z-index:3; }
 @media (max-width:640px) {
-  .block-container { padding:1rem .8rem 3rem !important; }
+  .block-container { padding:3.2rem .8rem 3rem !important; }
+  [data-testid="stHorizontalBlock"] > [data-testid="stColumn"]:has([data-testid="stButtonGroup"]) { flex:1 1 100% !important; min-width:100% !important; width:100% !important; }
+  [data-testid="stButtonGroup"] { width:100%; }
+  [data-testid="stButtonGroup"] button { flex:1 1 0; padding-left:.4rem; padding-right:.4rem; }
   [data-testid="stHorizontalBlock"] { flex-wrap:wrap !important; gap:.5rem !important; }
   [data-testid="stHorizontalBlock"] > [data-testid="stColumn"] { min-width:calc(50% - .5rem) !important; flex:1 1 calc(50% - .5rem) !important; }
   .page-title { font-size:1.35rem !important; }
   [data-testid="stHorizontalBlock"]:has(.login-mark) > [data-testid="stColumn"]:not(:has(.login-mark)) { display:none !important; }
   [data-testid="stHorizontalBlock"]:has(.login-mark) > [data-testid="stColumn"] { flex:1 1 100% !important; min-width:100% !important; }
 }
-@media (max-width:820px) { .stat-grid { grid-template-columns:repeat(2,1fr); } .acc-grid { grid-template-columns:1fr; } }
+@media (max-width:820px) { .acc-grid { grid-template-columns:1fr; } }
 </style>
 """
 st.markdown(CSS, unsafe_allow_html=True)
+
+_card_n = [0]
+
+
+def card():
+    """Kontainer berbingkai dengan kunci unik per proses jalan, supaya CSS bisa menyasarnya (class st-key-card_N)."""
+    _card_n[0] += 1
+    return st.container(border=True, key=f"card_{_card_n[0]}")
+
 
 def hide_sidebar() -> None:
     """Halaman tanpa menu (login, tautan publik) tidak perlu sidebar sama sekali."""
@@ -127,34 +158,66 @@ def page_header(title: str, subtitle: str = "") -> None:
     )
 
 
-def stat_cards(items) -> None:
-    cells = "".join(
-        f'<div class="stat"><div class="l">{esc(label)}</div><div class="v">{esc(value)}</div></div>'
-        for label, value in items
+ACC_COLORS = ["#2447c9", "#0e9f8e", "#d9822b", "#8b5cf6", "#c2417c", "#64748b"]
+
+
+def acc_colors(accounts) -> dict:
+    """Satu warna tetap per akun (urut pembuatan), dipakai di bilah kapasitas dan kartu akun."""
+    ordered = sorted(accounts, key=lambda a: a.created_at or 0)
+    return {a.id: ACC_COLORS[i % len(ACC_COLORS)] for i, a in enumerate(ordered)}
+
+
+def provider_name(acc) -> str:
+    return "Yandex Disk" if acc.provider == "yandex" else "Google Drive"
+
+
+def capacity_panel(accounts, totals) -> None:
+    """Satu bilah untuk seluruh ruang: tiap akun mendapat potongan sebesar pemakaiannya."""
+    colors = acc_colors(accounts)
+    live = [a for a in accounts if a.status == "connected" and a.total_bytes]
+    total = totals.total or 0
+    segments = "".join(
+        f'<span style="width:{(a.used_bytes or 0) / total * 100:.2f}%;background:{colors[a.id]}" '
+        f'title="{esc(a.email)}: {esc(fmt_bytes(a.used_bytes))}"></span>'
+        for a in live
+        if total and (a.used_bytes or 0) > 0
     )
-    st.markdown(f'<div class="stat-grid">{cells}</div>', unsafe_allow_html=True)
+    legend = "".join(
+        f'<span><span class="dot" style="background:{colors[a.id]}"></span>{esc(a.email)}'
+        f"<small>{esc(fmt_bytes(a.used_bytes))}</small></span>"
+        for a in live
+    )
+    st.markdown(
+        f'<div class="cap"><div class="cap-head"><div><span class="cap-big">{esc(fmt_bytes(totals.used))}</span>'
+        f'<span class="cap-of">terpakai dari {esc(fmt_bytes(totals.total))}</span></div>'
+        f'<div class="cap-free">{esc(fmt_bytes(totals.free))} tersedia</div></div>'
+        f'<div class="cap-bar">{segments}</div><div class="cap-legend">{legend}</div></div>',
+        unsafe_allow_html=True,
+    )
 
 
-def bar_html(used: int, total: int | None) -> str:
+def bar_html(used: int, total: int | None, color: str | None = None) -> str:
     pct = 0 if not total else min(used / total * 100, 100)
     warn = " warn" if pct >= 90 else ""
-    return f'<div class="bar{warn}"><span style="width:{pct:.1f}%"></span></div>'
+    fill = f";background:{color}" if color and not warn else ""
+    return f'<div class="bar{warn}"><span style="width:{pct:.1f}%{fill}"></span></div>'
 
 
-def account_card_html(acc) -> str:
+def account_card_html(acc, color: str = "#2447c9") -> str:
     if acc.status == "connected":
         chip = '<span class="chip">Terhubung</span>'
         body = (
-            bar_html(acc.used_bytes or 0, acc.total_bytes)
+            bar_html(acc.used_bytes or 0, acc.total_bytes, color)
             + f'<div class="acc-sub">{esc(fmt_bytes(acc.used_bytes))} terpakai · '
             f'{esc(fmt_bytes(acc.available_bytes))} tersedia</div>'
         )
     else:
         chip = '<span class="chip warn">Hubungkan ulang</span>'
-        body = f'<div class="acc-sub">{esc(acc.last_error or "Izin Google perlu diperbarui.")}</div>'
+        body = f'<div class="acc-sub">{esc(acc.last_error or "Izin akun perlu diperbarui.")}</div>'
+    letter = "Y" if acc.provider == "yandex" else "G"
     return (
-        f'<div class="acc"><div class="acc-top"><div class="acc-ico">☁</div><div>'
-        f'<div class="acc-name">{esc(acc.email)}</div><div class="acc-sub">Google Drive</div></div>{chip}</div>{body}</div>'
+        f'<div class="acc"><div class="acc-top"><div class="acc-ico" style="background:{color}1f;color:{color}">{letter}</div><div>'
+        f'<div class="acc-name">{esc(acc.email)}</div><div class="acc-sub">{provider_name(acc)}</div></div>{chip}</div>{body}</div>'
     )
 
 
@@ -358,11 +421,11 @@ def login_page(settings: Settings) -> None:
         st.markdown('<span class="login-mark"></span>', unsafe_allow_html=True)
         st.write("")
         st.write("")
-        with st.container(border=True):
+        with card():
             st.markdown(
                 f'<div class="brand"><div class="logo">{LOGO_SVG}</div>Penggabung Drive</div>'
                 '<div class="page-title" style="font-size:1.6rem">Satu penyimpanan, banyak akun</div>'
-                '<div class="page-sub">Gabungkan beberapa Google Drive. Unggahan otomatis dipilihkan akun yang masih punya ruang.</div>',
+                '<div class="page-sub">Gabungkan beberapa akun penyimpanan. Unggahan otomatis masuk ke akun yang masih punya ruang.</div>',
                 unsafe_allow_html=True,
             )
             show_flash()
@@ -419,14 +482,8 @@ def page_home(settings: Settings, db, user) -> None:
         st.info("Belum ada akun. Buka Pengaturan untuk menghubungkan Google Drive.")
         return
     totals = service.quota_totals(accounts)
-    stat_cards(
-        [
-            ("Total ruang", fmt_bytes(totals.total)),
-            ("Terpakai", fmt_bytes(totals.used)),
-            ("Tersedia", fmt_bytes(totals.free)),
-            ("Akun", sum(1 for a in accounts if a.status == "connected")),
-        ]
-    )
+    capacity_panel(accounts, totals)
+    colors = acc_colors(accounts)
     if totals.unlimited_accounts:
         st.caption(f"{totals.unlimited_accounts} akun berkuota tak terbatas tidak dihitung ke total.")
 
@@ -434,7 +491,7 @@ def page_home(settings: Settings, db, user) -> None:
     if connected:
         policy = service.get_policy(db, user.id)
         order = ordered_accounts(connected, policy.priority_ids)
-        with st.container(border=True):
+        with card():
             top = st.columns([3, 2])
             top[0].markdown("**Aturan unggah**")
             top[0].caption("Pilih bagaimana unggahan baru memilih akun penyimpanan.")
@@ -454,11 +511,14 @@ def page_home(settings: Settings, db, user) -> None:
                 row = st.columns([6, 1.1, 1.1])
                 row[0].markdown(f'<div class="row-name">{esc(acc.email)}</div>', unsafe_allow_html=True)
                 row[0].caption(
-                    f"Google Drive · {fmt_bytes(acc.used_bytes)} terpakai · {fmt_bytes(acc.available_bytes)} tersedia"
+                    f"{provider_name(acc)} · {fmt_bytes(acc.used_bytes)} terpakai · {fmt_bytes(acc.available_bytes)} tersedia"
                 )
-                for col, label, delta in ((row[1], "Naik", -1), (row[2], "Turun", 1)):
+                for col, label, icon, delta in (
+                    (row[1], "Naik", ":material/arrow_upward:", -1),
+                    (row[2], "Turun", ":material/arrow_downward:", 1),
+                ):
                     j = i + delta
-                    if col.button(label, key=f"{label}_{acc.id}", disabled=not 0 <= j < len(order), width="stretch"):
+                    if col.button(icon, key=f"{label}_{acc.id}", help=label, disabled=not 0 <= j < len(order), width="stretch"):
                         ids = [a.id for a in order]
                         ids[i], ids[j] = ids[j], ids[i]
                         service.set_policy(db, user.id, policy.mode, ids)
@@ -466,7 +526,7 @@ def page_home(settings: Settings, db, user) -> None:
             st.caption("Urutan ini dipakai oleh mode Bergantian dan Urutan prioritas.")
 
     st.markdown(
-        '<div class="acc-grid">' + "".join(account_card_html(a) for a in accounts) + "</div>",
+        '<div class="acc-grid">' + "".join(account_card_html(a, colors[a.id]) for a in accounts) + "</div>",
         unsafe_allow_html=True,
     )
     st.caption("Kuota terakhir disinkronkan: " + ", ".join(f"{a.email.split('@')[0]} {fmt_dt(a.last_synced_at)} UTC" for a in connected))
@@ -545,9 +605,9 @@ def clear_selection() -> None:
 def folder_card_html(sub) -> str:
     when = fmt_dt(sub.updated_at or sub.created_at)
     return (
-        f'<div class="fold"><div class="fold-ico">{ui.folder_icon_html(sub.icon, sub.color)}</div>'
+        f'<div class="fold">{ui.folder_icon_html(sub.icon, sub.color, 36)}<div>'
         f'<div class="fold-name" title="{esc(sub.name)}">{esc(sub.name)}</div>'
-        f'<div class="fold-sub">Diperbarui {esc(when)}</div></div>'
+        f'<div class="fold-sub">Diperbarui {esc(when)}</div></div></div>'
     )
 
 
@@ -555,11 +615,10 @@ def file_card_html(item, email) -> str:
     kind = ui.file_kind(item.mime_type, item.name)
     star = '<span class="fstar">★</span>' if item.starred else ""
     return (
-        f'<div class="fcard">{ui.file_icon_html(kind)}'
+        f'<div class="fcard">{ui.file_icon_html(kind, 20)}'
         f'<div class="fname" title="{esc(item.name)}">{esc(item.name)}{star}</div>'
-        f'<div class="fsub">{esc(fmt_dt(item.created_at))}</div>'
-        f'<div class="fchips"><span class="fchip">{esc(fmt_bytes(item.size_bytes))}</span>'
-        f'<span class="fchip" title="{esc(email)}">{esc(email)}</span></div></div>'
+        f'<div class="fsub">{esc(fmt_bytes(item.size_bytes))} · {esc(fmt_dt(item.created_at))}</div>'
+        f'<span class="fchip" title="{esc(email)}">{esc(email)}</span></div>'
     )
 
 
@@ -610,7 +669,7 @@ def selection_bar(settings: Settings, db, user, picked) -> None:
     if not picked:
         return
     ids = [f.id for f in picked]
-    with st.container(border=True):
+    with card():
         st.markdown(f"**{len(picked)} dipilih**")
         a = st.columns([3, 1.3, 1.6, 1.5, 1.1])
         with a[0]:
@@ -719,16 +778,12 @@ def page_files(settings: Settings, db, user) -> None:
         folder_id = st.session_state["folder_id"] = None
 
     # ---- bilah alat
-    tools = st.columns([4, 2.3, 1.4, 1.8, 1.3])
+    tools = st.columns([5, 1.4, 1.9, 1.4])
     search = tools[0].text_input(
         "Cari", key="search", placeholder="Cari berkas di semua akun…", label_visibility="collapsed"
     )
-    size = (
-        tools[1].segmented_control("Ukuran kartu", list(SIZE_COLS), default="MD", key="files_size", label_visibility="collapsed")
-        or "MD"
-    )
-    tools[2].button("Unggah", icon=":material/upload:", type="primary", width="stretch", on_click=go_to, args=("Unggah",))
-    with tools[3].popover("Folder baru", icon=":material/create_new_folder:", width="stretch"):
+    tools[1].button("Unggah", icon=":material/upload:", type="primary", width="stretch", on_click=go_to, args=("Unggah",))
+    with tools[2].popover("Folder baru", icon=":material/create_new_folder:", width="stretch"):
         nf_name = st.text_input("Nama folder", key="nf_name")
         nf_color, nf_icon = style_pickers("nf", ui.DEFAULT_COLOR, ui.DEFAULT_ICON)
         if st.button("Buat folder", type="primary", key="nf_make"):
@@ -738,17 +793,21 @@ def page_files(settings: Settings, db, user) -> None:
             except AppError as exc:
                 flash("err", str(exc))
             st.rerun()
-    if tools[4].button("Sinkron", icon=":material/sync:", width="stretch"):
+    if tools[3].button("Sinkron", icon=":material/sync:", width="stretch"):
         sync_all(db, settings, user)
         st.rerun()
 
-    row = st.columns([5, 1.7])
+    row = st.columns([4, 2.4, 1.9])
     mode = (
         row[0].segmented_control("Mode", FILE_MODES, default=FILE_MODES[0], key="files_mode", label_visibility="collapsed")
         or FILE_MODES[0]
     )
+    size = (
+        row[1].segmented_control("Ukuran kartu", list(SIZE_COLS), default="MD", key="files_size", label_visibility="collapsed")
+        or "MD"
+    )
     view = (
-        row[1].segmented_control("Tampilan", ["Kisi", "Daftar"], default="Kisi", key="files_view", label_visibility="collapsed")
+        row[2].segmented_control("Tampilan", ["Kisi", "Daftar"], default="Kisi", key="files_view", label_visibility="collapsed")
         or "Kisi"
     )
     searching = bool(search.strip())
@@ -756,12 +815,12 @@ def page_files(settings: Settings, db, user) -> None:
 
     # ---- folder (hanya saat menjelajah)
     if browsing:
-        path = st.columns([1] * min(len(crumbs) + 1, 6) + [max(6 - len(crumbs), 1)])
-        if path[0].button("Beranda", icon=":material/home:", key="bc_root"):
+        path = st.columns([1.1] + [1.4] * min(len(crumbs), 5) + [max(6 - len(crumbs), 1) * 1.4])
+        if path[0].button("Beranda", icon=":material/home:", key="bc_root", type="tertiary"):
             st.session_state["folder_id"] = None
             st.rerun()
         for i, crumb in enumerate(crumbs[-5:], start=1):
-            if path[i].button(crumb.name, key=f"bc_{crumb.id}"):
+            if path[i].button(crumb.name, icon=":material/chevron_right:", key=f"bc_{crumb.id}", type="tertiary"):
                 st.session_state["folder_id"] = crumb.id
                 st.rerun()
 
@@ -769,9 +828,9 @@ def page_files(settings: Settings, db, user) -> None:
         for start in range(0, len(subs), 4):
             cols = st.columns(4)
             for col, sub in zip(cols, subs[start:start + 4]):
-                with col, st.container(border=True):
+                with col, card():
                     st.markdown(folder_card_html(sub), unsafe_allow_html=True)
-                    if st.button("Buka", key=f"open_{sub.id}", width="stretch"):
+                    if st.button("Buka", key=f"open_{sub.id}", type="tertiary", icon=":material/arrow_forward:"):
                         st.session_state["folder_id"] = sub.id
                         st.rerun()
         if folder_id:
@@ -822,7 +881,7 @@ def page_files(settings: Settings, db, user) -> None:
         for start in range(0, len(rows), ncols):
             cols = st.columns(ncols)
             for col, (item, email) in zip(cols, rows[start:start + ncols]):
-                with col, st.container(border=True):
+                with col, card():
                     st.checkbox("Pilih", key=f"sel{rnd}_{item.id}", label_visibility="collapsed")
                     st.markdown(file_card_html(item, email), unsafe_allow_html=True)
     else:
@@ -901,7 +960,7 @@ def page_shared(settings: Settings, db, user) -> None:
         st.info("Belum ada tautan aktif. Buat dari menu Berkas dengan memilih satu berkas.")
         return
     for share, item in shares:
-        with st.container(border=True):
+        with card():
             cols = st.columns([5, 2, 1])
             cols[0].markdown(f"**{file_icon(item.mime_type)} {item.name}**")
             cols[0].code(f"{settings.app_url}/?s={share.token}", language=None)
@@ -995,7 +1054,7 @@ def page_gallery(settings: Settings, db, user) -> None:
     page_header("Galeri", "Bagikan kumpulan foto tanpa memperlihatkan alamat penyimpanan aslinya.")
     show_flash()
     rows = [(f, e) for f, e in service.list_files(db, user.id, recent=True, limit=300) if service.is_image(f)]
-    with st.container(border=True):
+    with card():
         st.markdown("**Buat galeri baru**")
         if not rows:
             st.info("Belum ada foto. Unggah gambar lewat menu Unggah, lalu kembali ke sini.")
@@ -1017,7 +1076,7 @@ def page_gallery(settings: Settings, db, user) -> None:
                     flash("err", str(exc))
                 st.rerun()
     for gallery in service.list_galleries(db, user.id):
-        with st.container(border=True):
+        with card():
             cols = st.columns([5, 2, 1])
             cols[0].markdown(
                 f"**{esc(gallery.title)}** · {len(gallery.items)} foto · unduhan: "
@@ -1137,7 +1196,7 @@ def page_settings(settings: Settings, db, user) -> None:
     else:
         st.caption("Yandex Disk belum aktif. Isi YANDEX_CLIENT_ID dan YANDEX_CLIENT_SECRET di Secrets untuk menyalakannya.")
     for acc in accounts:
-        with st.container(border=True):
+        with card():
             cols = st.columns([4, 2, 2, 2])
             cols[0].markdown(f'<div class="row-name">{esc(acc.email)}</div>', unsafe_allow_html=True)
             cols[0].caption(
