@@ -863,7 +863,7 @@ def gallery_mode(gallery: Gallery) -> str:
 MAX_IMAGE_BYTES = 25 * 1024 * 1024
 THUMB_PX, VIEW_PX = 480, 1600
 _img_lock = threading.Lock()
-_img_cache: dict[tuple[str, int], bytes] = {}
+_img_cache: dict[tuple[str, int, bool], bytes] = {}
 _img_cache_bytes = 0
 IMG_CACHE_LIMIT = 80 * 1024 * 1024
 
@@ -939,12 +939,15 @@ def resolve_gallery(db: Session, token: str) -> Optional[tuple[Gallery, list[Fil
     return (gallery, files) if files else None
 
 
-def _resize(data: bytes, max_px: int) -> bytes:
+def _resize(data: bytes, max_px: int, square: bool = False) -> bytes:
     from PIL import Image, ImageOps
 
     with Image.open(io.BytesIO(data)) as img:
         img = ImageOps.exif_transpose(img)
-        img.thumbnail((max_px, max_px))
+        if square:  # ukuran seragam: potong dari tengah
+            img = ImageOps.fit(img, (max_px, max_px), method=Image.LANCZOS)
+        else:
+            img.thumbnail((max_px, max_px))
         if img.mode not in ("RGB", "L"):
             img = img.convert("RGB")
         out = io.BytesIO()
@@ -952,7 +955,7 @@ def _resize(data: bytes, max_px: int) -> bytes:
         return out.getvalue()
 
 
-def _cache_put(key: tuple[str, int], data: bytes) -> None:
+def _cache_put(key: tuple[str, int, bool], data: bytes) -> None:
     global _img_cache_bytes
     with _img_lock:
         if key in _img_cache:
@@ -964,11 +967,11 @@ def _cache_put(key: tuple[str, int], data: bytes) -> None:
         _img_cache_bytes += len(data)
 
 
-def gallery_image(db: Session, settings: Settings, gallery: Gallery, file_id: str, max_px: int) -> bytes:
+def gallery_image(db: Session, settings: Settings, gallery: Gallery, file_id: str, max_px: int, square: bool = False) -> bytes:
     """JPEG berukuran max_px untuk satu foto di galeri. Foto di luar galeri ditolak."""
     if file_id not in {e.file_id for e in gallery.items}:
         raise AppError("Foto tidak ada di galeri ini.")
-    key = (file_id, max_px)
+    key = (file_id, max_px, square)
     with _img_lock:
         hit = _img_cache.get(key)
     if hit is not None:
@@ -981,7 +984,7 @@ def gallery_image(db: Session, settings: Settings, gallery: Gallery, file_id: st
         raise AppError("Akun penyimpan foto ini sudah dilepas.")
     try:
         data, _, _ = _ops(acc).download_bytes(service_for(db, settings, acc), item.drive_file_id, MAX_IMAGE_BYTES)
-        out = _resize(data, max_px)
+        out = _resize(data, max_px, square)
     except AppError:
         raise
     except Exception as exc:
@@ -999,7 +1002,7 @@ def gallery_thumbs(settings: Settings, gallery_id: str, file_ids: Sequence[str],
         db = factory()
         try:
             gallery = db.get(Gallery, gallery_id)
-            return fid, gallery_image(db, settings, gallery, fid, THUMB_PX)
+            return fid, gallery_image(db, settings, gallery, fid, THUMB_PX, True)
         except Exception:
             return fid, None
         finally:
@@ -1455,3 +1458,68 @@ def usage_by_kind(db: Session, user_id: str) -> dict[str, int]:
     for mime, name, size in rows:
         sums[_KIND_TO_USAGE.get(file_kind(mime, name), "lainnya")] += size or 0
     return sums
+
+
+def gallery_zip(settings: Settings, gallery_id: str) -> tuple[bytes, str, list[str]]:
+    """ZIP semua foto galeri sesuai mode unduh. Mengembalikan (zip, nama_zip, foto_gagal)."""
+    import re
+    import zipfile
+
+    factory = get_session_factory(settings.database_url)
+    db = factory()
+    try:
+        gallery = db.get(Gallery, gallery_id)
+        if gallery is None:
+            raise AppError("Galeri tidak ditemukan.")
+        mode = gallery_mode(gallery)
+        if mode == "none":
+            raise AppError("Galeri ini tidak mengizinkan unduhan.")
+        found = resolve_gallery(db, gallery.token)
+        if not found:
+            raise AppError("Galeri tidak berlaku.")
+        files = found[1]
+        title = gallery.title
+        if mode == "original":
+            total = sum(f.size_bytes or 0 for f in files)
+            limit = settings.max_download_mb * 1024 * 1024
+            if total > limit:
+                raise AppError(
+                    f"Total {total // (1024 * 1024)} MB melebihi batas {settings.max_download_mb} MB. "
+                    "Unduh per foto, atau minta pemilik memakai mode ukuran kecil."
+                )
+        ids = [f.id for f in files]
+    finally:
+        db.close()
+
+    def fetch(fid: str):
+        session = factory()
+        try:
+            return fid, gallery_download(session, settings, session.get(Gallery, gallery_id), fid)
+        except Exception:
+            return fid, None
+        finally:
+            session.close()
+
+    buffer = io.BytesIO()
+    failed: list[str] = []
+    used: set[str] = set()
+    names = {f.id: f.name for f in files}
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_STORED) as archive, ThreadPoolExecutor(max_workers=4) as pool:
+        for fid, result in pool.map(fetch, ids):
+            if result is None:
+                failed.append(names[fid])
+                continue
+            data, name, _ = result
+            stem, dot, ext = name.rpartition(".")
+            if not dot:
+                stem, ext = name, ""
+            candidate, n = name, 1
+            while candidate in used:
+                n += 1
+                candidate = f"{stem} ({n})" + (f".{ext}" if ext else "")
+            used.add(candidate)
+            archive.writestr(candidate, data)
+    if len(failed) == len(ids):
+        raise AppError("Tidak ada foto yang berhasil diambil. Coba lagi nanti.")
+    slug = re.sub(r"[^A-Za-z0-9_-]+", "-", title).strip("-") or "galeri"
+    return buffer.getvalue(), f"{slug}.zip", failed

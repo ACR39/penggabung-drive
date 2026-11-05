@@ -872,3 +872,63 @@ def test_usage_by_kind_groups_files(env):
     trashed.status = "trashed"
     db.commit()
     assert service.usage_by_kind(db, user.id) == {"foto": 10, "video": 20, "dokumen": 5, "lainnya": 7}
+
+
+# ------------------------------------------------------------ galeri: thumbnail seragam + ZIP
+
+
+def test_gallery_thumbnails_are_uniform_squares(env, monkeypatch):
+    from PIL import Image
+
+    db, settings, user, accounts = env[0], env[1], env[2], env[3]
+    wide = _file(db, user, accounts[0], "lebar.png", 10, "image/png")
+    tall = _file(db, user, accounts[0], "tinggi.png", 10, "image/png")
+    shapes = {"lebar.png": (900, 300), "tinggi.png": (300, 900)}
+
+    def fake_dl(svc, fid, limit):
+        out = io.BytesIO()
+        Image.new("RGB", shapes[fid], "red").save(out, "PNG")
+        return out.getvalue(), fid, "image/png"
+
+    monkeypatch.setattr(service.drive, "download_bytes", fake_dl)
+    g = service.create_gallery(db, user.id, "Seragam", [wide.id, tall.id], None, "none")
+    for f in (wide, tall):
+        thumb = service.gallery_image(db, settings, g, f.id, service.THUMB_PX, True)
+        assert Image.open(io.BytesIO(thumb)).size == (service.THUMB_PX, service.THUMB_PX)
+    full = service.gallery_image(db, settings, g, wide.id, service.VIEW_PX)  # tampilan besar tetap proporsional
+    assert Image.open(io.BytesIO(full)).size != (service.THUMB_PX, service.THUMB_PX)
+
+
+def test_gallery_zip_modes_limits_and_duplicate_names(env, monkeypatch):
+    import zipfile
+
+    db, settings, user, accounts = env[0], env[1], env[2], env[3]
+    a = _file(db, user, accounts[0], "foto.png", 10, "image/png", "d1")
+    b = _file(db, user, accounts[0], "foto.png", 10, "image/png", "d2")  # nama kembar
+    raw = _png("green")
+    monkeypatch.setattr(service.drive, "download_bytes", lambda *x: (raw, "foto.png", "image/png"))
+
+    class SyncPool:  # SQLite di memori tidak dibagi antar thread; di produksi dipakai file/Postgres
+        def __init__(self, *a, **k): pass
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def map(self, fn, items): return [fn(i) for i in items]
+
+    monkeypatch.setattr(service, "ThreadPoolExecutor", SyncPool)
+    none = service.create_gallery(db, user.id, "Tanpa unduh", [a.id], None, "none")
+    with pytest.raises(service.AppError):
+        service.gallery_zip(settings, none.id)
+    g = service.create_gallery(db, user.id, "Liburan Bali!", [a.id, b.id], None, "original")
+    data, name, failed = service.gallery_zip(settings, g.id)
+    assert name == "Liburan-Bali.zip" and failed == []
+    with zipfile.ZipFile(io.BytesIO(data)) as z:
+        assert sorted(z.namelist()) == ["foto (2).png", "foto.png"]
+        assert z.read("foto.png") == raw
+    a.size_bytes = 5 * 1024 * 1024  # melewati batas 1 MB di fixture
+    db.commit()
+    with pytest.raises(service.AppError):
+        service.gallery_zip(settings, g.id)
+    small = service.create_gallery(db, user.id, "Kecil", [a.id], None, "small")
+    data, name, failed = service.gallery_zip(settings, small.id)  # mode kecil tidak kena batas ukuran asli
+    with zipfile.ZipFile(io.BytesIO(data)) as z:
+        assert z.namelist() == ["foto.jpg"]

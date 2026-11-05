@@ -154,3 +154,10 @@ Melepas folder hanya menghapus catatannya di aplikasi. Fitur ini khusus akun Goo
 - **Unggah** kini jendela di halaman Berkas (folder tujuan mengikuti folder yang sedang dibuka), tidak lagi menu sendiri.
 - **Sidebar:** rincian ruang per jenis (Foto, Video, Dokumen, Lainnya, Kosong). Angka Foto/Video/Dokumen dihitung dari berkas yang
   tercatat di aplikasi. "Lainnya" juga memuat pemakaian di luar aplikasi (berkas lain di Drive, Gmail, Google Foto).
+
+## Galeri: thumbnail seragam dan unduh semua
+
+- Thumbnail di galeri dipotong dari tengah menjadi persegi berukuran sama (480 px), jadi kisi rapi walau foto ada yang lebar atau tinggi.
+  Saat diperbesar, foto tetap proporsional.
+- Tombol **Unduh semua (ZIP)** muncul di galeri publik bila mode unduh bukan "tanpa unduhan". Isi ZIP mengikuti mode (ukuran kecil atau
+  berkas asli). Mode berkas asli dibatasi total `MAX_DOWNLOAD_MB`. Nama kembar diberi nomor.

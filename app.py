@@ -1102,6 +1102,20 @@ def download_photo(settings: Settings, gallery_id: str, file_id: str) -> None:
     st.download_button("Simpan ke perangkat", data, file_name=name, mime=mime, type="primary", icon=":material/download:")
 
 
+@st.dialog("Unduh semua foto")
+def download_all_photos(settings: Settings, gallery_id: str) -> None:
+    with st.spinner("Mengumpulkan foto dan membuat ZIP…"):
+        try:
+            data, name, failed = service.gallery_zip(settings, gallery_id)
+        except AppError as exc:
+            st.error(str(exc))
+            return
+    st.caption(f"{fmt_bytes(len(data))} · {name}")
+    if failed:
+        st.warning(f"{len(failed)} foto gagal diambil dan tidak ikut: " + ", ".join(failed[:5]))
+    st.download_button("Simpan ZIP ke perangkat", data, file_name=name, mime="application/zip", type="primary", icon=":material/folder_zip:")
+
+
 def public_gallery(settings: Settings, db, token: str) -> None:
     hide_sidebar()
     found = service.resolve_gallery(db, token)
@@ -1111,7 +1125,10 @@ def public_gallery(settings: Settings, db, token: str) -> None:
         return
     gallery, files = found
     st.title(f"🖼️ {gallery.title}")
-    st.caption(f"{len(files)} foto")
+    bar = st.columns([4, 2])
+    bar[0].caption(f"{len(files)} foto")
+    if service.gallery_mode(gallery) != "none" and bar[1].button("Unduh semua (ZIP)", icon=":material/folder_zip:", width="stretch", key="dl_all"):
+        download_all_photos(settings, gallery.id)
     limit = st.session_state.get(f"glim_{token}", GALLERY_STEP)
     shown = files[:limit]
     with st.spinner("Memuat foto…"):

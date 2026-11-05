@@ -141,4 +141,8 @@ at.session_state["user_id"] = user.id; at.session_state["menu"] = "Berkas"; at.r
 [b for b in at.button if b.label == "Unggah"][0].click().run()
 assert any(sb.key == "up_dest" and sb.value is None for sb in at.selectbox), "folder akar tidak tersedia"
 ok &= check("folder akar di dialog", at)
+# tombol Unduh semua (ZIP) di galeri publik dengan mode unduh
+at = AppTest.from_file(APP, default_timeout=60); at.query_params["g"] = gal2.token; at.run()
+assert any(b.key == "dl_all" for b in at.button), "tombol unduh semua hilang"
+ok &= check("tombol unduh semua", at)
 sys.exit(0 if ok else 1)
